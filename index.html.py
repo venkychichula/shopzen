@@ -1187,4 +1187,4 @@ if __name__ == "__main__":
         s.close()
     except Exception:
         pass
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+        uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
