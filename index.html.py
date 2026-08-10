@@ -1,5 +1,5 @@
 # =====================================================================
-# SHOPZEN AI - DEPLOYMENT FINAL (Crash-Proof, Full Extension, Port 8080)
+# SHOPZEN AI - DEPLOYMENT FINAL (Crash-Proof, Full Extension)
 # Run:  py shopzen.py     Open: http://127.0.0.1:8080
 # =====================================================================
 from fastapi import FastAPI, Response, Header, HTTPException, Request
@@ -19,8 +19,8 @@ except ImportError:
 app = FastAPI(title="ShopZen AI", version="22.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip() or "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"
-client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1") if OpenAI else None
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1") if OpenAI and GROQ_API_KEY else None
 MODELS = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_store.json")
@@ -829,7 +829,7 @@ function setTheme(t){document.documentElement.setAttribute('data-theme',t);local
 setTheme(localStorage.getItem('theme')||'light');
 
 var TTS=localStorage.getItem('tts')==='1';
-function toggleTTS(){TTS=!TTS;localStorage.setItem('tts',TTS?'1':'0');document.getElementById('tts-btn').textContent=TTS?'🔊':'';if(!TTS&&'speechSynthesis' in window)speechSynthesis.cancel();toast(TTS?'AI voice ON':'AI voice OFF')}
+function toggleTTS(){TTS=!TTS;localStorage.setItem('tts',TTS?'1':'0');document.getElementById('tts-btn').textContent=TTS?'🔊':'🔇';if(!TTS&&'speechSynthesis' in window)speechSynthesis.cancel();toast(TTS?'AI voice ON':'AI voice OFF')}
 document.getElementById('tts-btn').textContent=TTS?'🔊':'';
 function speak(text){if(!TTS||!('speechSynthesis' in window)||!text)return;speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(text);u.lang='en-IN';u.rate=1.05;speechSynthesis.speak(u)}
 
@@ -1168,25 +1168,5 @@ def home():
     return Response(content=HTML_PAGE, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 if __name__ == "__main__":
-    import uvicorn, socket
-    print("\n========== SHOPZEN AI - DEPLOYMENT FINAL ==========")
-    print("Your Intent. Our Intelligence.")
-    if client:
-        try:
-            client.chat.completions.create(model=MODELS[0], messages=[{"role": "user", "content": "READY"}], max_tokens=5)
-            print("✅ Groq brain ONLINE")
-        except Exception as e:
-            print("⚠️ note:", str(e)[:60])
-    else:
-        print("❌ Run: py -m pip install openai")
-    print("\nOpen: http://127.0.0.1:8080")
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        print("Same Wi-Fi: http://" + s.getsockname()[0] + ":8080")
-        s.close()
-    except Exception:
-        pass
-       if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
