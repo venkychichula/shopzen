@@ -687,7 +687,10 @@ button.send:disabled{opacity:.5;cursor:not-allowed}
 .about-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:13px;font-size:12px}
 .about-card b{font-size:13px;display:block;margin-bottom:4px}
 .about-card span{color:var(--dim);line-height:1.5}
-@media(max-width:860px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%);transition:transform .25s;z-index:60}.sidebar.open{transform:none}}
+.menu-btn{display:none;background:transparent;border:1px solid var(--border);color:var(--text);border-radius:10px;padding:6px 10px;font-size:16px;cursor:pointer}
+.side-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
+.side-backdrop.open{display:block}
+@media(max-width:860px){.menu-btn{display:inline-flex}.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%);transition:transform .25s;z-index:60;box-shadow:var(--shadow-lg)}.sidebar.open{transform:none}}
 ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:4px}
 </style></head><body>
 
@@ -718,9 +721,10 @@ button.send:disabled{opacity:.5;cursor:not-allowed}
 <div class="user-meta"><div class="user-name" id="user-name-side">User</div><div class="user-plan" id="user-plan">Free plan</div></div>
 <button class="icon-btn" onclick="logout()" title="Logout">⎋</button>
 </div></div></aside>
-
+<div class="side-backdrop" id="side-backdrop" onclick="toggleSidebar()"></div>
 <main class="main">
 <header class="topbar">
+<button class="menu-btn" onclick="toggleSidebar()">☰</button>
 <div class="top-title">ShopZen AI</div>
 <div class="head-right">
 <div class="badge live" id="live-badge">🟢 –</div>
