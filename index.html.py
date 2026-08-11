@@ -40,7 +40,7 @@ def load_store():
             SEARCH_HISTORY = d.get("search_history", {}); CONVERSATIONS = d.get("conversations", {})
             ROOMS = d.get("rooms", {}); WISHLISTS = d.get("wishlists", {})
     except Exception: pass
-
+        
 def save_store():
     try:
         with open(STORE_FILE, "w", encoding="utf-8") as f:
