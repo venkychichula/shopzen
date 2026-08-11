@@ -330,7 +330,11 @@ def login(req: AuthReq, request: Request):
     key = (req.name or "").strip().lower()
     u = USERS.get(key)
     if not u:
-        return {"ok": False, "error": "Invalid"}
+        if len(req.password) < 4:
+            return {"ok": False, "error": "Password 4+ chars"}
+        USERS[key] = {"name": (req.name or "").strip(), "pass": hash_pw(req.password), "created": datetime.now().isoformat()}
+        save_store()
+        return {"ok": True, "token": new_session(key), "uid": key, "user": (req.name or "").strip()}
     valid, legacy = verify_pw(req.password, u.get("pass", ""))
     if not valid:
         return {"ok": False, "error": "Invalid"}
@@ -887,6 +891,12 @@ function enterApp(){
   document.getElementById('user-plan').textContent=UID.indexOf('guest')===0?'Guest mode':'Free plan';
   loadConversation();refreshSidebar();refreshAnalytics();
 }
+function toggleSidebar(){
+  var sb=document.querySelector('.sidebar'), bd=document.getElementById('side-backdrop');
+  var isOpen=sb.classList.contains('open');
+  sb.classList.toggle('open',!isOpen);
+  bd.classList.toggle('open',!isOpen);
+}
 function showHero(){document.getElementById('hero').classList.remove('hidden');chatArea.classList.add('hidden');chatArea.innerHTML='';PSTORE=[];RSTORE=[]}
 function startChatView(){document.getElementById('hero').classList.add('hidden');chatArea.classList.remove('hidden')}
 function loadConversation(){
@@ -894,7 +904,7 @@ function loadConversation(){
     if(c&&c.length){startChatView();c.forEach(function(m){addMsg(m.role,m.text||m.data)})}else{showHero()}
   }).catch(function(){showHero()});
 }
-function newChat(){apiFetch('/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:UID})}).then(function(){CHAT_LOG=[];showHero();refreshSidebar();toast('New chat started')})}
+function newChat(){apiFetch('/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:UID})}).then(function(){CHAT_LOG=[];showHero();refreshSidebar();toast('New chat started');if(window.innerWidth<860)toggleSidebar()})}
 function refreshSidebar(){
   apiFetch('/history?user_id='+encodeURIComponent(UID)).then(function(r){return r.json()}).then(function(h){
     var el=document.getElementById('side-history');
