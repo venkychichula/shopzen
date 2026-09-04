@@ -305,20 +305,7 @@ def is_fragment(msg):
 
 def get_image_url(prompt, name):
     seed = int(hashlib.md5(str(name).encode()).hexdigest(), 16) % 10000
-
-    safe_prompt = (
-        str(prompt or name)
-        + " realistic ecommerce product photograph, "
-        + "single product, centered, clean studio background, "
-        + "no text, no watermark"
-    )
-
-    return (
-        "https://gen.pollinations.ai/image/"
-        + urllib.parse.quote(safe_prompt)
-        + "?model=flux&width=400&height=300&seed="
-        + str(seed)
-    )
+    return "https://image.pollinations.ai/prompt/" + urllib.parse.quote(str(prompt)) + "?width=400&height=300&nologo=true&seed=" + str(seed)
 
 def build_price_data(price, trend, name):
     price = max(1, int(to_num(price, 0)))
