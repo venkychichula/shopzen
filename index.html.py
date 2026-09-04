@@ -11,6 +11,8 @@ import os, json, random, hashlib, hmac, uuid, time, re, socket
 import urllib.parse, urllib.request, concurrent.futures
 from datetime import datetime, timedelta
 from collections import OrderedDict
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI(title="ShopZen AI", version="31.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
