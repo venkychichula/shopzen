@@ -136,9 +136,22 @@ def _http_get(url):
         return r.read().decode("utf-8", "ignore")
 
 def direct_url(store, name):
-    d = STORE_DOMAINS.get(store, "google.com")
-    return "https://duckduckgo.com/?q=" + urllib.parse.quote('!ducky site:' + d + ' "' + name + '"')
+    q = urllib.parse.quote_plus(name)
 
+    SEARCH_URLS = {
+        "Amazon": f"https://www.amazon.in/s?k={q}",
+        "Flipkart": f"https://www.flipkart.com/search?q={q}",
+        "Croma": f"https://www.croma.com/search/?text={q}",
+        "Tata CLiQ": f"https://www.tatacliq.com/search/?searchText={q}",
+        "Reliance Digital": f"https://www.reliancedigital.in/search?q={q}",
+        "Vijay Sales": f"https://www.vijaysales.com/search/{q}",
+        "Snapdeal": f"https://www.snapdeal.com/search?keyword={q}"
+    }
+
+    return SEARCH_URLS.get(
+        store,
+        "https://www.google.com/search?q=" + q
+    )
 def _resolve_exact(domain, name):
     try:
         q = urllib.parse.quote('site:' + domain + ' "' + name + '"')
