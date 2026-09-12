@@ -122,109 +122,684 @@ def kb_price(name):
         if keys in n: return price
     return None
 
-# ------------------- LIVE EXACT-PRODUCT ENGINE -----------------------
-STORE_LIST = ["Amazon", "Flipkart", "Croma", "Tata CLiQ", "Reliance Digital", "Vijay Sales", "Snapdeal"]
-STORE_DOMAINS = {"Amazon": "amazon.in", "Flipkart": "flipkart.com", "Croma": "croma.com",
-    "Tata CLiQ": "tatacliq.com", "Reliance Digital": "reliancedigital.in",
-    "Vijay Sales": "vijaysales.com", "Snapdeal": "snapdeal.com"}
+# ------------------- RETAILER ENGINE V2 -------------------
+# ShopZen V2:
+# EXACT  = verified retailer product URL
+# LIKELY = product page found, but exact variant is not guaranteed
+# SEARCH = safe retailer search page
+#
+# IMPORTANT:
+# We never expose DuckDuckGo/search-engine URLs to users.
+
+STORE_LIST = [
+    "Amazon",
+    "Flipkart",
+    "Croma",
+    "Tata CLiQ",
+    "Reliance Digital",
+    "Vijay Sales",
+    "Snapdeal"
+]
+
+STORE_DOMAINS = {
+    "Amazon": "amazon.in",
+    "Flipkart": "flipkart.com",
+    "Croma": "croma.com",
+    "Tata CLiQ": "tatacliq.com",
+    "Reliance Digital": "reliancedigital.in",
+    "Vijay Sales": "vijaysales.com",
+    "Snapdeal": "snapdeal.com"
+}
+
+
+# ---------------------------------------------------------
+# Basic HTTP helper
+# ---------------------------------------------------------
 
 def _http_get(url):
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        "Accept-Language": "en-IN,en;q=0.9", "Accept": "text/html,application/xhtml+xml"})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Mobile Safari/537.36"
+            ),
+            "Accept-Language": "en-IN,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml"
+        }
+    )
+
     with urllib.request.urlopen(req, timeout=6) as r:
         return r.read().decode("utf-8", "ignore")
 
+
+# ---------------------------------------------------------
+# Product text normalization
+# ---------------------------------------------------------
+
+def _normalize_product_text(text):
+    text = (text or "").lower()
+
+    # Common separators
+    text = re.sub(r"[-_/|,:;()\[\]{}]+", " ", text)
+
+    # Keep letters/numbers/spaces
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
+def _product_tokens(text):
+    normalized = _normalize_product_text(text)
+
+    # Ignore very generic shopping words
+    stop_words = {
+        "buy",
+        "best",
+        "price",
+        "online",
+        "india",
+        "new",
+        "latest",
+        "official",
+        "store",
+        "shop",
+        "product",
+        "products"
+    }
+
+    return {
+        token
+        for token in normalized.split()
+        if len(token) >= 2 and token not in stop_words
+    }
+
+
+def _match_confidence(query, candidate):
+    """
+    Returns a simple token-overlap confidence score.
+
+    This is NOT an AI guarantee.
+    It is only used to decide whether a discovered retailer URL
+    looks sufficiently related to the requested product.
+    """
+
+    q_tokens = _product_tokens(query)
+    c_tokens = _product_tokens(candidate)
+
+    if not q_tokens or not c_tokens:
+        return 0.0
+
+    overlap = len(q_tokens & c_tokens)
+
+    return round(overlap / max(len(q_tokens), 1), 2)
+
+
+# ---------------------------------------------------------
+# Retailer URL validation
+# ---------------------------------------------------------
+
+def _is_allowed_retailer_url(store, url):
+    """
+    Security + correctness check.
+
+    Only accept URLs belonging to the expected retailer.
+    """
+
+    if not url:
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        hostname = (parsed.hostname or "").lower()
+
+        expected = STORE_DOMAINS.get(store, "").lower()
+
+        if not expected:
+            return False
+
+        return (
+            hostname == expected
+            or hostname.endswith("." + expected)
+        )
+
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------
+# Safe retailer search URL
+# ---------------------------------------------------------
+
 def direct_url(store, name):
+    """
+    Always return a retailer-owned search page.
+
+    This is the final fallback when ShopZen cannot safely
+    identify an exact product page.
+    """
+
     q = urllib.parse.quote_plus(name)
 
     SEARCH_URLS = {
         "Amazon": f"https://www.amazon.in/s?k={q}",
+
         "Flipkart": f"https://www.flipkart.com/search?q={q}",
+
         "Croma": f"https://www.croma.com/search/?text={q}",
-        "Tata CLiQ": f"https://www.tatacliq.com/search/?searchText={q}",
-        "Reliance Digital": f"https://www.reliancedigital.in/search?q={q}",
-        "Vijay Sales": f"https://www.vijaysales.com/search/{q}",
-        "Snapdeal": f"https://www.snapdeal.com/search?keyword={q}"
+
+        "Tata CLiQ": (
+            f"https://www.tatacliq.com/search/?searchText={q}"
+        ),
+
+        "Reliance Digital": (
+            f"https://www.reliancedigital.in/search?q={q}"
+        ),
+
+        "Vijay Sales": (
+            f"https://www.vijaysales.com/search/{q}"
+        ),
+
+        "Snapdeal": (
+            f"https://www.snapdeal.com/search?keyword={q}"
+        )
     }
 
     return SEARCH_URLS.get(
         store,
         "https://www.google.com/search?q=" + q
     )
+
+
+# ---------------------------------------------------------
+# Discover retailer product URL
+# ---------------------------------------------------------
+
 def _resolve_exact(domain, name):
+    """
+    Uses a search engine internally to discover a possible
+    retailer product page.
+
+    IMPORTANT:
+    The search-engine URL is NEVER returned to the customer.
+
+    The discovered URL must:
+      1. belong to the expected retailer
+      2. have a meaningful product path
+      3. have reasonable token similarity
+    """
+
     try:
-        q = urllib.parse.quote('site:' + domain + ' "' + name + '"')
-        html = _http_get("https://html.duckduckgo.com/html/?q=" + q)
-        m = re.search(r'uddg=([^&"]+)', html)
-        if m: return urllib.parse.unquote(m.group(1))
-    except Exception: pass
-    return None
+        q = urllib.parse.quote(
+            'site:' + domain + ' "' + name + '"'
+        )
+
+        search_url = (
+            "https://html.duckduckgo.com/html/?q=" + q
+        )
+
+        html = _http_get(search_url)
+
+        # DuckDuckGo encoded destination
+        m = re.search(
+            r'uddg=([^&"]+)',
+            html
+        )
+
+        if not m:
+            return None
+
+        candidate = urllib.parse.unquote(m.group(1))
+
+        # Never accept an unexpected domain
+        expected_store = None
+
+        for store, store_domain in STORE_DOMAINS.items():
+            if store_domain == domain:
+                expected_store = store
+                break
+
+        if not expected_store:
+            return None
+
+        if not _is_allowed_retailer_url(
+            expected_store,
+            candidate
+        ):
+            return None
+
+        # Avoid obvious search/category pages being called exact
+        parsed = urllib.parse.urlparse(candidate)
+        path = (parsed.path or "").lower()
+
+        if not path or path in ("/", "/search", "/search/"):
+            return None
+
+        # Basic product relevance check
+        candidate_text = (
+            parsed.path
+            + " "
+            + parsed.query
+        )
+
+        confidence = _match_confidence(
+            name,
+            candidate_text
+        )
+
+        # Conservative threshold
+        if confidence < 0.35:
+            return None
+
+        return candidate
+
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------
+# Price extraction
+# ---------------------------------------------------------
 
 def _price_from_page(url):
+    """
+    Extract a possible INR price from a retailer page.
+
+    This price is considered LIVE only when it comes from
+    a successfully fetched retailer product page.
+    """
+
     try:
+
+        if not url:
+            return None
+
         html = _http_get(url)
-        m = re.search(r'₹\s*([\d,]{3,})', html)
-        if m: return int(m.group(1).replace(",", ""))
-        m = re.search(r'"price"\s*:\s*"([\d.]+)"', html)
-        if m: return int(float(m.group(1)))
-    except Exception: pass
+
+        # ₹12,999
+        m = re.search(
+            r'₹\s*([\d,]{3,})',
+            html
+        )
+
+        if m:
+            return int(
+                m.group(1).replace(",", "")
+            )
+
+        # JSON price field
+        m = re.search(
+            r'"price"\s*:\s*"([\d.]+)"',
+            html
+        )
+
+        if m:
+            return int(float(m.group(1)))
+
+    except Exception:
+        pass
+
     return None
 
+
+# ---------------------------------------------------------
+# Standard retailer result
+# ---------------------------------------------------------
+
+def _store_result(
+    store,
+    name,
+    url,
+    price=None,
+    live=False,
+    match_type="search",
+    confidence=0.0
+):
+    """
+    Keep every retailer response in the same format.
+
+    match_type:
+        exact
+        likely
+        search
+
+    price_status:
+        live
+        unavailable
+    """
+
+    if match_type not in {
+        "exact",
+        "likely",
+        "search"
+    }:
+        match_type = "search"
+
+    if live and price is not None:
+        price_status = "live"
+    else:
+        price_status = "unavailable"
+
+    return {
+        "store": store,
+        "price": price,
+        "url": url,
+        "live": bool(live and price is not None),
+
+        # NEW V2 fields
+        "match_type": match_type,
+        "confidence": round(
+            max(0.0, min(1.0, confidence)),
+            2
+        ),
+        "price_status": price_status
+    }
+
+
+# ---------------------------------------------------------
+# Flipkart live scraper
+# ---------------------------------------------------------
+
 def _scrape_flipkart(name):
+
     try:
-        html = _http_get("https://www.flipkart.com/search?q=" + urllib.parse.quote(name))
-        m = re.search(r'href="([^"]*?/p/itm[^"]*?)"', html)
-        if not m: return None
-        url = "https://www.flipkart.com" + m.group(1).split("?")[0]
-        pm = re.search(r"₹([\d,]+)", html[m.end():])
-        if not pm: return None
-        return {"store": "Flipkart", "price": int(pm.group(1).replace(",", "")), "url": url, "live": True}
+
+        html = _http_get(
+            "https://www.flipkart.com/search?q="
+            + urllib.parse.quote(name)
+        )
+
+        m = re.search(
+            r'href="([^"]*?/p/itm[^"]*?)"',
+            html
+        )
+
+        if not m:
+            return None
+
+        url = (
+            "https://www.flipkart.com"
+            + m.group(1).split("?")[0]
+        )
+
+        # Safety check
+        if not _is_allowed_retailer_url(
+            "Flipkart",
+            url
+        ):
+            return None
+
+        pm = re.search(
+            r"₹([\d,]+)",
+            html[m.end():]
+        )
+
+        price = None
+
+        if pm:
+            price = int(
+                pm.group(1).replace(",", "")
+            )
+
+        # First search result is not guaranteed to be
+        # the exact variant, so classify it honestly.
+        confidence = 0.80
+
+        return _store_result(
+            "Flipkart",
+            name,
+            url,
+            price=price,
+            live=price is not None,
+            match_type="likely",
+            confidence=confidence
+        )
+
     except Exception:
         return None
+
+
+# ---------------------------------------------------------
+# Amazon live scraper
+# ---------------------------------------------------------
 
 def _scrape_amazon(name):
+
     try:
-        html = _http_get("https://www.amazon.in/s?k=" + urllib.parse.quote(name))
-        m = re.search(r'href="(/[^"]*?/dp/[A-Z0-9]{10})', html)
-        if not m: return None
-        url = "https://www.amazon.in" + m.group(1)
-        pm = re.search(r"₹([\d,]+)", html[m.end():])
-        if not pm: return None
-        return {"store": "Amazon", "price": int(pm.group(1).replace(",", "")), "url": url, "live": True}
+
+        html = _http_get(
+            "https://www.amazon.in/s?k="
+            + urllib.parse.quote(name)
+        )
+
+        m = re.search(
+            r'href="(/[^"]*?/dp/[A-Z0-9]{10})',
+            html
+        )
+
+        if not m:
+            return None
+
+        url = (
+            "https://www.amazon.in"
+            + m.group(1)
+        )
+
+        # Safety check
+        if not _is_allowed_retailer_url(
+            "Amazon",
+            url
+        ):
+            return None
+
+        pm = re.search(
+            r"₹([\d,]+)",
+            html[m.end():]
+        )
+
+        price = None
+
+        if pm:
+            price = int(
+                pm.group(1).replace(",", "")
+            )
+
+        # Search result found, but variant matching
+        # is not guaranteed by this lightweight scraper.
+        confidence = 0.80
+
+        return _store_result(
+            "Amazon",
+            name,
+            url,
+            price=price,
+            live=price is not None,
+            match_type="likely",
+            confidence=confidence
+        )
+
     except Exception:
         return None
 
+
+# ---------------------------------------------------------
+# Individual retailer engine
+# ---------------------------------------------------------
+
 def _live_store(store, name):
-    if store == "Flipkart":
-        r = _scrape_flipkart(name)
-        if r: return r
+
+    # -----------------------------------------------------
+    # Amazon
+    # -----------------------------------------------------
+
     if store == "Amazon":
-        r = _scrape_amazon(name)
-        if r: return r
-    url = _resolve_exact(STORE_DOMAINS[store], name) or direct_url(store, name)
-    price = _price_from_page(url) if ("duckduckgo" not in url) else None
-    return {"store": store, "price": price, "url": url, "live": price is not None}
+
+        result = _scrape_amazon(name)
+
+        if result:
+            return result
+
+    # -----------------------------------------------------
+    # Flipkart
+    # -----------------------------------------------------
+
+    if store == "Flipkart":
+
+        result = _scrape_flipkart(name)
+
+        if result:
+            return result
+
+    # -----------------------------------------------------
+    # Other retailers
+    # -----------------------------------------------------
+
+    domain = STORE_DOMAINS.get(store)
+
+    if not domain:
+
+        return _store_result(
+            store,
+            name,
+            direct_url(store, name),
+            match_type="search",
+            confidence=0.0
+        )
+
+    # Try to discover a retailer product page
+    candidate_url = _resolve_exact(
+        domain,
+        name
+    )
+
+    if candidate_url:
+
+        # Validate one more time before fetching
+        if _is_allowed_retailer_url(
+            store,
+            candidate_url
+        ):
+
+            price = _price_from_page(
+                candidate_url
+            )
+
+            confidence = _match_confidence(
+                name,
+                urllib.parse.urlparse(
+                    candidate_url
+                ).path
+            )
+
+            # If we have a retailer product URL and
+            # reasonable confidence, classify as likely.
+            return _store_result(
+                store,
+                name,
+                candidate_url,
+                price=price,
+                live=price is not None,
+                match_type="likely",
+                confidence=max(
+                    0.50,
+                    confidence
+                )
+            )
+
+    # -----------------------------------------------------
+    # Final safe fallback
+    # -----------------------------------------------------
+
+    return _store_result(
+        store,
+        name,
+        direct_url(store, name),
+        price=None,
+        live=False,
+        match_type="search",
+        confidence=0.0
+    )
+
+
+# ---------------------------------------------------------
+# Fetch all retailer prices
+# ---------------------------------------------------------
 
 def fetch_live_prices(name):
-    key = name.lower().strip(); now = time.time()
-    c = LIVE_CACHE.get(key)
-    if c and now - c["ts"] < 300: return c["results"]
-    results = []
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
-            futs = [ex.submit(_live_store, s, name) for s in STORE_LIST]
-            for f in concurrent.futures.as_completed(futs, timeout=14):
-                try:
-                    r = f.result()
-                    if r: results.append(r)
-                except Exception: pass
-    except Exception: pass
-    order = {s: i for i, s in enumerate(STORE_LIST)}
-    results.sort(key=lambda x: order.get(x["store"], 99))
-    LIVE_CACHE[key] = {"ts": now, "results": results}
-    return results
 
+    key = (
+        _normalize_product_text(name)
+        or "unknown"
+    )
+
+    now = time.time()
+
+    # 5-minute cache
+    c = LIVE_CACHE.get(key)
+
+    if c and now - c["ts"] < 300:
+        return c["results"]
+
+    results = []
+
+    try:
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=7
+        ) as ex:
+
+            futs = [
+                ex.submit(
+                    _live_store,
+                    store,
+                    name
+                )
+                for store in STORE_LIST
+            ]
+
+            for f in concurrent.futures.as_completed(
+                futs,
+                timeout=14
+            ):
+
+                try:
+
+                    result = f.result()
+
+                    if result:
+                        results.append(result)
+
+                except Exception:
+                    pass
+
+    except Exception:
+        pass
+
+    # Preserve the original retailer order
+    order = {
+        store: i
+        for i, store in enumerate(STORE_LIST)
+    }
+
+    results.sort(
+        key=lambda x:
+        order.get(x["store"], 99)
+    )
+
+    LIVE_CACHE[key] = {
+        "ts": now,
+        "results": results
+    }
+
+    return results
 # ------------------------------ AI CORE ------------------------------
 SYSTEM_PROMPT = """You are ShopZen AI, a warm, friendly Indian shopping buddy 🛍️. Talk like a helpful friend, 1-2 light emojis, short caring summaries.
 Respond with ONLY valid JSON. No markdown. No ```json.
