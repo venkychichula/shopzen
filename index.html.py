@@ -1228,8 +1228,12 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
         CACHE[ck] = data; CACHE.move_to_end(ck)
         while len(CACHE) > CACHE_MAX: CACHE.popitem(last=False)
         save_store(); return data
-    except Exception:
-        return {"intent": "chat", "summary": "Brain paused. Please try again. 🙏"}
+       except Exception as e:
+        import traceback
+        error_msg = str(e)[:200]
+        print(f"AI ERROR: {error_msg}")
+        traceback.print_exc()
+        return {"intent": "chat", "summary": f"⚠️ AI issue: {error_msg}"}
 
 HTML_PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
