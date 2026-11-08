@@ -1,4 +1,6 @@
 fastapi
 uvicorn[standard]
-python-dotenv
+groq
 openai
+python-dotenv
+requests
