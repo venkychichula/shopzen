@@ -23,7 +23,7 @@ try:
     client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 except ImportError:
     OpenAI = None; client = None
-MODELS = ["MODELS = openai/gpt-oss-20b"]
+MODELS = ["openai/gpt-oss-20b"]
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_store.json")
 USERS, FEEDBACK, SEARCH_HISTORY, CONVERSATIONS, ROOMS, WISHLISTS = {}, [], {}, {}, {}, {}
 LAST_ACTIVE, RATE_BUCKETS, ASKED, CLARIFY_STATE = {}, {}, {}, {}
@@ -1017,8 +1017,8 @@ ALLOWED_INTENTS = {"chat", "clarify", "explain", "search", "compare", "review", 
 def normalize_llm_data(data, cat=None):
     if not isinstance(data, dict): data = {}
     intent = data.get("intent")
- if intent not in ALLOWED_INTENTS:
-    raise ValueError(
+    if intent not in ALLOWED_INTENTS:
+     raise ValueError(
         "AI returned an invalid response intent. "
         "Expected a valid ShopZen response."
     )
