@@ -805,13 +805,14 @@ Respond with ONLY valid JSON. No markdown. No ```json.
 ABSOLUTE RULES:
 - NEVER repeat your previous answer.
 - If the user switches category, treat as brand-new query.
-- "products" MUST contain EXACTLY 4 items; FIRST must be the single best EXACT match for the user's brand/colour/budget/who.
+- Return only products that belong to the requested category. For phones, recommend phones only — never cases, covers, chargers, cables, screen protectors or other accessories.
+- Return up to 4 relevant products; never add unrelated products just to reach four.
 - Respect user preferences STRICTLY.
-- price = plain integer INR. Use EXACT current Indian street prices (e.g. Redmi Note 13 ≈ 13999, iPhone 15 ≈ 65999, boAt Airdopes 141 ≈ 1099). NEVER inflate prices.
+- Never guess or invent a current price. Set price to null unless a reliable current retailer price is available.
 INTENTS:
 1) "chat": {"intent":"chat","summary":"friendly answer"}
 2) "clarify": {"intent":"clarify","summary":"friendly question line","questions":[{"q":"...","options":["..."]}]}
-3) "search": {"intent":"search","summary":"2-sentence friendly highlight","products":[{"name":"real Indian model","brand":"b","price":12345,"price_range":[11999,13499],"rating":4.5,"price_trend":"stable","festival_tip":"tip","image_prompt":"6-word visual white bg","specs":{},"pros":["p1","p2"],"cons":["c1"],"ai_reason":"why it fits THIS user"}]}
+3) "search": {"intent":"search","summary":"2-sentence friendly highlight","products":[{"name":"real Indian model","brand":"b","price":null,"rating":4.5,"specs":{},"pros":["p1","p2"],"cons":["c1"],"ai_reason":"why it fits THIS user"}]}
 4) "decide": {"intent":"decide","summary":"verdict","winner":{...same as product...},"runner_up":""}
 5) "timing": {"intent":"timing","summary":"advice","timing":{"product":"m","price_now":12345,"predicted_price":11800,"verdict":"WAIT","best_window":"Diwali","expected_drop_pct":10,"reason":"why"}}
 6) "compare": {"intent":"compare","summary":"s","products":["A","B"],"comparison":[{"feature":"Price","values":["100","200"]}]}
@@ -860,10 +861,9 @@ def clarify_questions(cat):
 
 FRIENDLY_NEXT = {"budget": "Perfect! 💸", "brand": "Great taste! ✨", "color": "Love that! 🎨", "who": "Got it! 🙂"}
 
-def store_price_comparison(name, base):
-    base = max(1, int(to_num(base, 0)))
-    rnd = random.Random(int(hashlib.md5(str(name).encode()).hexdigest(), 16) ^ 0x5f3)
-    return [{"store": s, "price": int(base * rnd.uniform(0.95, 1.05)), "url": direct_url(s, name), "live": False} for s in STORE_LIST]
+def store_price_comparison(name, base=None):
+    # Never fabricate retailer-specific prices.
+    return []
 
 def to_num(v, default=0):
     try:
@@ -893,8 +893,8 @@ def is_fragment(msg):
     return len(m) <= 40
 
 def get_image_url(prompt, name):
-    seed = int(hashlib.md5(str(name).encode()).hexdigest(), 16) % 10000
-    return "https://image.pollinations.ai/prompt/" + urllib.parse.quote(str(prompt)) + "?width=400&height=300&nologo=true&seed=" + str(seed)
+    # AI-generated illustrations must not be presented as product photos.
+    return ""
 
 def build_price_data(price, trend, name):
     price = max(1, int(to_num(price, 0)))
@@ -1014,29 +1014,44 @@ def require_user(authorization, requested_uid=None):
 
 ALLOWED_INTENTS = {"chat", "clarify", "explain", "search", "compare", "review", "negotiate", "decide", "timing"}
 
+def is_accessory_name(name, cat=None):
+    n = _normalize_product_text(name)
+    accessory_terms = {
+        "phone": ["case", "cover", "charger", "charging cable", "screen protector", "tempered glass", "power bank", "mobile stand", "phone holder", "back cover", "skin"],
+        "laptop": ["laptop bag", "laptop sleeve", "keyboard", "mouse", "laptop stand", "cooling pad", "charger", "adapter"],
+        "tablet": ["case", "cover", "stylus", "screen protector", "tempered glass", "keyboard", "tablet stand"],
+        "tv": ["tv stand", "wall mount", "remote", "screen guard"],
+        "camera": ["camera bag", "camera strap", "tripod", "lens filter", "battery", "charger"]
+    }
+    return any(term in n for term in accessory_terms.get(cat, []))
+
 def normalize_llm_data(data, cat=None):
     if not isinstance(data, dict): data = {}
     intent = data.get("intent")
     if intent not in ALLOWED_INTENTS:
-     raise ValueError(
-        "AI returned an invalid response intent. "
-        "Expected a valid ShopZen response."
-    )
-    else:
-        data["summary"] = str(data.get("summary") or "")[:800]
+        raise ValueError("AI returned an invalid response intent. Expected a valid ShopZen response.")
+    data["summary"] = str(data.get("summary") or "")[:800]
     if data.get("intent") == "search":
         products = data.get("products") or []
         if not isinstance(products, list): products = []
-        products = products[:4]
+        clean, seen = [], set()
         for p in products:
             if not isinstance(p, dict): continue
-            p["name"] = str(p.get("name") or "Unknown")[:160]; p["brand"] = str(p.get("brand") or "")[:80]
-            kp = kb_price(p["name"])
-            if kp: p["price"] = kp
-            else: p["price"] = clamp_price(cat, max(1, int(to_num(p.get("price"), 0)))) if cat else max(1, int(to_num(p.get("price"), 0)))
+            name = str(p.get("name") or "").strip()[:160]
+            if not name or name.lower() in seen or is_accessory_name(name, cat): continue
+            seen.add(name.lower())
+            p["name"] = name
+            p["brand"] = str(p.get("brand") or "")[:80]
+            p["price"] = None
+            p.pop("price_range", None)
             p["rating"] = max(0, min(5, to_num(p.get("rating"), 0)))
-            if p.get("price_trend") not in {"falling", "stable", "rising"}: p["price_trend"] = "stable"
-        data["products"] = products
+            p["price_trend"] = "unverified"
+            clean.append(p)
+            if len(clean) >= 4: break
+        data["products"] = clean
+        if not clean:
+            data["intent"] = "chat"
+            data["summary"] = "I couldn't find a reliable product match in that category yet. Try adding a brand or exact model name, and I'll narrow it down."
     if data.get("intent") == "compare":
         if not isinstance(data.get("products"), list): data["products"] = []
         if not isinstance(data.get("comparison"), list): data["comparison"] = []
@@ -1206,7 +1221,12 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
     else:
         history = HISTORY.setdefault(uid, [])
         last_query = LAST_QUERY.get(uid, ""); last_cat = extract_category(last_query)
-        if current_cat and last_cat and current_cat != last_cat:
+        if current_cat and not is_fragment(msg_text):
+            # Every complete new product query starts with clean context.
+            history = HISTORY[uid] = []
+            ASKED[uid] = False
+            CLARIFY_STATE.pop(uid, None)
+        elif current_cat and last_cat and current_cat != last_cat:
             history = HISTORY[uid] = []; ASKED[uid] = False
         if current_cat and not ASKED.get(uid):
             qs = clarify_questions(current_cat)
@@ -1228,20 +1248,23 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
         if personalized: data["personalized"] = True
         if data.get("intent") == "search" and data.get("products"):
             for p in data["products"]:
-                p["image_url"] = get_image_url(p.get("image_prompt", p.get("name")), p.get("name"))
-                p["price_data"] = build_price_data(p.get("price", 0), p.get("price_trend", "stable"), p.get("name"))
-                p["store_prices"] = store_price_comparison(p.get("name"), p.get("price"))
+                p["image_url"] = ""
+                p.pop("image_prompt", None)
+                p.pop("price_data", None)
+                p.pop("price_range", None)
+                p["store_prices"] = []
             hlist = SEARCH_HISTORY.setdefault(uid, [])
             if effective not in hlist: hlist.insert(0, effective)
             if len(hlist) > 8: del hlist[8:]
         if data.get("intent") == "decide" and data.get("winner"):
             try:
                 w = data["winner"]
-                kp = kb_price(w.get("name"))
-                w["price"] = kp if kp else (clamp_price(current_cat, max(1, int(to_num(w.get("price"), 0)))) if current_cat else max(1, int(to_num(w.get("price"), 0))))
-                w["image_url"] = get_image_url(w.get("image_prompt", w.get("name")), w.get("name"))
-                w["price_data"] = build_price_data(w.get("price", 0), w.get("price_trend", "stable"), w.get("name"))
-                w["store_prices"] = store_price_comparison(w.get("name"), w.get("price"))
+                w["price"] = None
+                w["image_url"] = ""
+                w.pop("image_prompt", None)
+                w.pop("price_data", None)
+                w.pop("price_range", None)
+                w["store_prices"] = []
                 data["winner"] = w
             except Exception: pass
         if data.get("intent") == "timing" and data.get("timing"):
@@ -1689,30 +1712,23 @@ function fetchLive(idx){
       var bb=document.getElementById('buy-'+idx);
       if(bb){bb.href=withPrice[0].url;bb.innerHTML='🛒 Buy • '+esc(withPrice[0].store)+' — '+inr(withPrice[0].price)}
     }
-    if(MODAL_IDX===idx){document.getElementById('m-price').textContent='≈ '+inr(p.price);document.getElementById('m-stores').innerHTML=renderStorePrices(p);document.getElementById('m-links').innerHTML=bestDealBar(p)}
+    if(MODAL_IDX===idx){document.getElementById('m-price').textContent=p.price!=null?'₹'+inr(p.price):'Price unavailable';document.getElementById('m-stores').innerHTML=renderStorePrices(p);document.getElementById('m-links').innerHTML=bestDealBar(p)}
   }).catch(function(){});
 }
 function drainLive(){while(LIVEQ.length)fetchLive(LIVEQ.shift())}
 
 function bestDealBar(p){
   var live=arr(p.live_prices).filter(function(s){return s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
-  var bs=live.length?live[0]:(arr(p.store_prices).length?p.store_prices[0]:null);
-  var html=bs?'<a class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+bs.url+'">🛒 BUY AT BEST PRICE — '+esc(bs.store)+' • '+inr(bs.price)+'</a> ':'';
+  var bs=live.length?live[0]:null;
+  var html=bs?'<a class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+bs.url+'">🛒 View retailer — '+esc(bs.store)+(bs.price!=null?' • '+inr(bs.price):'')+'</a> ':'';
   return html+'<button class="shop-btn" onclick="shareToGroup()">👥 Share</button><button class="shop-btn" onclick="saveWish()">🔖 Wishlist</button>';
 }
 
 function renderStorePrices(p){
   var liveArr=arr(p.live_prices);
-  var est=arr(p.store_prices);
-  var merged;
-  if(liveArr.length){
-    merged=liveArr.map(function(s){
-      var e=null;for(var i=0;i<est.length;i++){if(est[i].store===s.store){e=est[i];break}}
-      return {store:s.store, price:(s.price!=null?s.price:(e?e.price:null)), url:(s.url||(e?e.url:'')), live:!!s.live};
-    });
-  }else{
-    merged=est.map(function(s){return {store:s.store,price:s.price,url:s.url,live:false}});
-  }
+  var merged=liveArr.map(function(s){
+    return {store:s.store, price:s.price, url:s.url, live:!!s.live, match_type:s.match_type||"likely"};
+  });
   merged.sort(function(a,b){
     if(a.live!==b.live)return a.live?-1:1;
     return (a.price==null?9e9:a.price)-(b.price==null?9e9:b.price);
@@ -1729,10 +1745,10 @@ function renderStorePrices(p){
       '<td style="font-weight:700">'+(s.price!=null?inr(s.price):'—')+'</td>'+
       '<td><a class="shop-btn" target="_blank" rel="noopener noreferrer" href="'+s.url+'">Visit ↗</a></td></tr>';
   }).join('');
-  if(!rows)return '';
-  return '<div class="chart-box" style="margin:12px 0"><div class="chart-head"><h3>🛒 '+esc(p.name)+' — all platforms</h3>'+(lowest?'<span class="verdict verdict-BUYNOW">Lowest: '+inr(lowest.price)+'</span>':'')+'</div>'+
-    '<table style="margin-top:4px"><tr><th>Store</th><th>Price</th><th>Exact Page</th></tr>'+rows+'</table>'+
-    '<p class="range">Only the store YOU choose opens — one tap, one exact product page.</p></div>';
+  if(!rows)return '<p class="range">No retailer price could be retrieved right now. Use the product search link to check current listings.</p>';
+  return '<div class="chart-box" style="margin:12px 0"><div class="chart-head"><h3>🛒 '+esc(p.name)+' — retailer results</h3>'+(lowest?'<span class="verdict verdict-BUYNOW">Lowest retrieved: '+inr(lowest.price)+'</span>':'')+'</div>'+
+    '<table style="margin-top:4px"><tr><th>Store</th><th>Retrieved price</th><th>Retailer page</th></tr>'+rows+'</table>'+
+    '<p class="range">Retailer prices can change; confirm the final amount on the retailer page.</p></div>';
 }
 
 function trendBadge(t){
@@ -1768,7 +1784,7 @@ function openModal(idx){
   document.getElementById('m-img').src=p.image_url||'';
   document.getElementById('m-brand').textContent=String(p.brand||'').toUpperCase();
   document.getElementById('m-name').textContent=p.name||'';
-  document.getElementById('m-price').textContent='≈ '+inr(p.price);
+  document.getElementById('m-price').textContent=p.price!=null?'₹'+inr(p.price):'Price unavailable';
   document.getElementById('m-rating').textContent='★ '+numSafe(p.rating)+' / 5';
   document.getElementById('m-reason').textContent='"'+(p.ai_reason||'')+'"';
   document.getElementById('m-links').innerHTML=bestDealBar(p);
@@ -1846,16 +1862,16 @@ function exportChat(){
 
 function productCardHTML(p){
   p=p||{};PSTORE.push(p);var idx=PSTORE.length-1;LIVEQ.push(idx);
-  var best=arr(p.store_prices).length?p.store_prices[0]:null;
-  var buyUrl=best?best.url:directUrl('flipkart.com',p.name);
-  var buyLabel=best?('🛒 Buy • '+esc(best.store)):'🛒 Buy';
+  var best=null;
+  var buyUrl=directUrl('flipkart.com',p.name);
+  var buyLabel='🛒 Search retailers';
   return '<div class="product-card">'+
-    '<div class="img-wrap" onclick="openModal('+idx+')"><img src="'+(p.image_url||'')+'" alt="'+esc(p.name)+'"></div>'+
+    '<div class="img-wrap" onclick="openModal('+idx+')">'+(p.image_url?'<img src="'+p.image_url+'" alt="'+esc(p.name)+'">':'<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:150px;color:var(--dim);font-size:12px;text-align:center;padding:12px">Verified product photo unavailable</div>')+'</div>'+
     '<div class="product-info">'+
       '<div style="display:flex;justify-content:space-between;align-items:center"><span class="brand">'+esc(p.brand)+'</span><span style="font-size:11px;color:var(--amber);font-weight:700">★ '+numSafe(p.rating)+'</span></div>'+
       '<div class="name" onclick="openModal('+idx+')">'+esc(p.name)+'</div>'+
-      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="price" id="price-'+idx+'">≈ '+inr(p.price)+'</span>'+trendBadge(p.price_trend)+'</div>'+
-      '<div class="bestline" id="best-'+idx+'">'+(best?('Best: '+inr(best.price)+' on '+esc(best.store)):'')+'</div>'+
+      '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="price" id="price-'+idx+'">Price unavailable — checking stores…</span></div>'+
+      '<div class="bestline" id="best-'+idx+'">Only retrieved retailer prices will appear here.</div>'+
       '<div class="reason">"'+esc(p.ai_reason)+'"</div>'+
       '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'+
         '<a id="buy-'+idx+'" class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+buyUrl+'">'+buyLabel+'</a>'+
@@ -1882,7 +1898,7 @@ function renderResponse(data){
     }else{
       html+='<div class="products-grid">'+prods.map(productCardHTML).join('')+'</div>';
     }
-    html+='<div class="disclaimer">💯 Prices verified against real market data; LIVE store check confirms the exact current price.</div>';
+    html+='<div class="disclaimer">Prices appear only when ShopZen retrieves them from a retailer. Unverified product photos are not shown.</div>';
   }
   if(data.intent==='decide'&&data.winner){
     html+='<div class="winner-card"><div class="winner-title">🏆 FINAL PICK — ONE DECISION</div>'+productCardHTML(data.winner)+
