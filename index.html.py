@@ -430,7 +430,7 @@ def _fetch_product_metadata(url):
         if not price_text:
             price_text = meta_value(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\']')
         price = None
-        if price_text and (not currency or currency.upper() in ("INR", "RS", "₹")):
+        if price_text and currency.upper() in ("INR", "RS", "₹"):
             try:
                 value = float(re.sub(r"[^0-9.]", "", price_text))
                 if 100 <= value <= 1000000:
@@ -1203,6 +1203,7 @@ def normalize_llm_data(data, cat=None):
             if not name or name.lower() in seen or is_accessory_name(name, cat): continue
             seen.add(name.lower())
             p["name"] = name
+            p["category"] = cat or ""
             proposed_brand = str(p.get("brand") or "").strip()[:80]
             # A brand label is displayed only when it is present in the product title.
             p["brand"] = proposed_brand if proposed_brand and proposed_brand.casefold() in name.casefold() else ""
@@ -1903,8 +1904,9 @@ function fetchLive(idx){
   apiFetch('/liveprices?name='+encodeURIComponent(p.name)).then(function(r){return r.json()}).then(function(d){
     var live=arr(d.results);
     p.live_prices=live;
+    var isFashion=p.category==='clothing';
     var exact=live.find(function(s){return s.match_type==='exact'&&s.url});
-    var withPrice=live.filter(function(s){return s.match_type==='exact'&&s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
+    var withPrice=live.filter(function(s){return (isFashion?s.match_type==='exact':!!s.live)&&s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
     var pe=document.getElementById('price-'+idx);
     var b=document.getElementById('best-'+idx);
     if(exact){
@@ -1938,7 +1940,7 @@ function fetchLive(idx){
 function drainLive(){while(LIVEQ.length)fetchLive(LIVEQ.shift())}
 
 function bestDealBar(p){
-  var live=arr(p.live_prices).filter(function(s){return s.match_type==='exact'&&s.url}).sort(function(a,b){return (a.price==null?9e9:a.price)-(b.price==null?9e9:b.price)});
+  var live=arr(p.live_prices).filter(function(s){return (s.match_type==='exact'||s.live)&&s.url}).sort(function(a,b){return (a.price==null?9e9:a.price)-(b.price==null?9e9:b.price)});
   var bs=live.length?live[0]:null;
   var html=bs?'<a class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+bs.url+'">🛒 View matching listing — '+esc(bs.store)+(bs.price!=null?' • '+inr(bs.price):'')+'</a> ':'';
   return html+'<button class="shop-btn" onclick="shareToGroup()">👥 Share</button><button class="shop-btn" onclick="saveWish()">🔖 Wishlist</button>';
@@ -1960,7 +1962,7 @@ function renderStorePrices(p){
     return '<tr'+(isBest?' style="background:rgba(52,211,153,.10)"':'')+'>'+
       '<td><b>'+esc(s.store)+'</b> '+(s.match_type==='exact'
         ?'<span style="color:var(--green);font-size:9px;font-weight:800">MATCHED LISTING</span>'
-        :'<span style="color:var(--dim);font-size:9px;font-weight:700">SEARCH LINK</span>')+
+        :(s.live?'<span style="color:var(--amber);font-size:9px;font-weight:800">RETRIEVED RESULT</span>':'<span style="color:var(--dim);font-size:9px;font-weight:700">SEARCH LINK</span>'))+
       (isBest?' <span style="color:var(--green);font-size:10px;font-weight:800">BEST PRICE</span>':'')+
       (s.product_title?'<div style="font-size:10px;color:var(--dim);margin-top:3px">'+esc(s.product_title)+'</div>':'')+
       (s.sizes.length?'<div style="font-size:10px;color:var(--dim)">Sizes listed: '+esc(s.sizes.join(', '))+'</div>':'')+'</td>'+
