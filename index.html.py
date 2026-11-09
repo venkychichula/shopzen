@@ -23,7 +23,7 @@ try:
     client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 except ImportError:
     OpenAI = None; client = None
-MODELS = ["llama-3.1-8b-instant"]
+MODELS = ["MODELS = openai/gpt-oss-20b"]
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_store.json")
 USERS, FEEDBACK, SEARCH_HISTORY, CONVERSATIONS, ROOMS, WISHLISTS = {}, [], {}, {}, {}, {}
 LAST_ACTIVE, RATE_BUCKETS, ASKED, CLARIFY_STATE = {}, {}, {}, {}
@@ -938,14 +938,44 @@ def get_stats():
     return {"total": total, "up": up, "down": total - up, "score": round(up / total * 100) if total else 100}
 
 def call_llm(messages):
+    last_error = None
+
     for attempt in range(3):
         for model in MODELS:
             try:
-                resp = client.chat.completions.create(model=model, messages=messages, temperature=0.6, response_format={"type": "json_object"})
-                return resp.choices[0].message.content.strip(), model
-            except Exception: continue
-        if attempt < 2: time.sleep(2 * (attempt + 1))
-    return "{}", MODELS[0]
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    response_format={"type": "json_object"}
+                )
+
+                content = resp.choices[0].message.content
+
+                if not content:
+                    raise ValueError("AI returned an empty response")
+
+                # Validate JSON before returning
+                parsed = json.loads(content)
+
+                if not isinstance(parsed, dict):
+                    raise ValueError("AI response is not a JSON object")
+
+                return json.dumps(parsed), model
+
+            except Exception as e:
+                last_error = e
+                print(
+                    f"AI ERROR | Model: {model} | "
+                    f"Attempt: {attempt + 1} | {str(e)[:300]}"
+                )
+
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
+
+    raise RuntimeError(
+        f"All AI attempts failed: {str(last_error)[:300]}"
+    )
 
 def llm_text(prompt):
     try:
@@ -987,8 +1017,11 @@ ALLOWED_INTENTS = {"chat", "clarify", "explain", "search", "compare", "review", 
 def normalize_llm_data(data, cat=None):
     if not isinstance(data, dict): data = {}
     intent = data.get("intent")
-    if intent not in ALLOWED_INTENTS:
-        data["intent"] = "chat"; data["summary"] = str(data.get("summary") or "Here's my take.")[:800]
+ if intent not in ALLOWED_INTENTS:
+    raise ValueError(
+        "AI returned an invalid response intent. "
+        "Expected a valid ShopZen response."
+    )
     else:
         data["summary"] = str(data.get("summary") or "")[:800]
     if data.get("intent") == "search":
