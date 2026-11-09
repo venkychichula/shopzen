@@ -1227,7 +1227,7 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
         CACHE[ck] = data; CACHE.move_to_end(ck)
         while len(CACHE) > CACHE_MAX: CACHE.popitem(last=False)
         save_store(); return data
-       except Exception as e:
+    except Exception as e:
         import traceback
         error_msg = str(e)[:200]
         print(f"AI ERROR: {error_msg}")
