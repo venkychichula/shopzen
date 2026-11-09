@@ -734,6 +734,22 @@ def _live_store(store, name):
 # ---------------------------------------------------------
 
 def fetch_live_prices(name):
+    # Fashion items must never be sent through electronics retailer scrapers.
+    # These are retailer search pages, not verified exact product pages or prices.
+    if extract_category(name) == "clothing":
+        q = urllib.parse.quote_plus(name)
+        fashion_searches = [
+            ("Myntra", "https://www.myntra.com/search?q=" + q),
+            ("AJIO", "https://www.ajio.com/search/?text=" + q),
+            ("H&M", "https://www2.hm.com/en_in/search-results.html?q=" + q),
+            ("Zara", "https://www.zara.com/in/en/search?searchTerm=" + q),
+            ("Levi's", "https://www.levi.in/search?q=" + q),
+            ("Amazon", "https://www.amazon.in/s?k=" + q),
+            ("Flipkart", "https://www.flipkart.com/search?q=" + q)
+        ]
+        return [_store_result(store, name, url, price=None, live=False,
+                              match_type="search", confidence=0.0)
+                for store, url in fashion_searches]
 
     key = (
         _normalize_product_text(name)
@@ -807,6 +823,9 @@ ABSOLUTE RULES:
 - NEVER repeat your previous answer.
 - If the user switches category, treat as brand-new query.
 - Return only products that belong to the requested category. For phones, recommend phones only — never cases, covers, chargers, cables, screen protectors or other accessories.
+- For fashion, preserve the requested garment exactly (cargo pants means cargo pants, not shirts, jackets or accessories).
+- The brand field must be the actual manufacturer/label of that exact product. It must also appear in the product name; otherwise set brand to an empty string. Never attach H&M, Zara, Levi's or another brand just because it is popular.
+- Do not invent retailer availability, product URLs or prices.
 - Return up to 4 relevant products; never add unrelated products just to reach four.
 - Respect user preferences STRICTLY.
 - Never guess or invent a current price. Set price to null unless a reliable current retailer price is available.
@@ -826,12 +845,13 @@ CATEGORY_DICT = {
     "shoes": ["shoe", "shoes", "sneaker", "nike", "adidas"], "earbuds": ["earbud", "earbuds", "tws", "buds", "airpods"],
     "headphones": ["headphone", "headset"], "watch": ["watch", "smartwatch"], "tablet": ["tablet", "ipad"],
     "tv": ["tv", "television"], "camera": ["camera", "dslr"],
+    "clothing": ["cargo", "cargo pants", "cargo trousers", "trousers", "pants", "jeans", "shirt", "shirts", "tshirt", "t-shirt", "dress", "hoodie", "jacket", "kurta", "shorts"],
 }
 USE_WORDS = ["gaming","coding","college","office","running","gym","fitness","travel","study","daily","music","camera","editing"]
 PRICE_BOUNDS = {
     "laptop": (25000, 120000), "phone": (6000, 80000), "shoes": (900, 12000),
     "earbuds": (800, 12000), "headphones": (1200, 20000), "watch": (1200, 25000),
-    "tablet": (9000, 60000), "tv": (10000, 80000), "camera": (15000, 90000)
+    "tablet": (9000, 60000), "tv": (10000, 80000), "camera": (15000, 90000), "clothing": (500, 15000)
 }
 def clamp_price(cat, price):
     mn, mx = PRICE_BOUNDS.get(cat, (500, 500000))
@@ -846,6 +866,7 @@ BRAND_OPTIONS = {
     "watch": ["Noise", "Fire-Boltt", "boAt", "Titan"],
     "tablet": ["Samsung", "Apple", "Lenovo"], "tv": ["Samsung", "LG", "Xiaomi", "Sony"],
     "camera": ["Canon", "Nikon", "Sony"],
+    "clothing": ["H&M", "Zara", "Levi's", "Myntra", "Roadster", "Snitch", "Bewakoof", "Puma", "Adidas", "Nike"],
 }
 
 def clarify_questions(cat, query=""):
@@ -862,7 +883,8 @@ def clarify_questions(cat, query=""):
       "watch":[{"key":"purpose","q":"What do you need the smartwatch for? ⌚","options":["Fitness & health tracking","Notifications & calls","Style & daily use","Sports"]},{"key":"compatibility","q":"Which phone do you use?","options":["Android","iPhone","No preference"]}],
       "tablet":[{"key":"purpose","q":"What will you mainly use the tablet for?","options":["Study & notes","Reading & browsing","Drawing & design","Gaming & entertainment"]}],
       "tv":[{"key":"size","q":"What TV size are you looking for? 📺","options":["32–43 inch","50–55 inch","65 inch or larger","No preference"]},{"key":"priority","q":"What's your main TV use?","options":["Movies & OTT","Gaming","Sports","Everyday viewing"]}],
-      "camera":[{"key":"purpose","q":"What do you want to shoot most? 📷","options":["Travel & portraits","YouTube & vlogging","Professional photography","Wildlife & action"]}]
+      "camera":[{"key":"purpose","q":"What do you want to shoot most? 📷","options":["Travel & portraits","YouTube & vlogging","Professional photography","Wildlife & action"]}],
+      "clothing":[{"key":"fit","q":"What fit do you prefer?","options":["Relaxed / baggy","Regular fit","Slim fit","Oversized"]},{"key":"style","q":"What style are you looking for?","options":["Utility / streetwear","Casual everyday","Smart casual","Minimal"]}]
     }
     category_qs = specific.get(cat, [])
     qs.extend(category_qs)
@@ -1083,7 +1105,9 @@ def normalize_llm_data(data, cat=None):
             if not name or name.lower() in seen or is_accessory_name(name, cat): continue
             seen.add(name.lower())
             p["name"] = name
-            p["brand"] = str(p.get("brand") or "")[:80]
+            proposed_brand = str(p.get("brand") or "").strip()[:80]
+            # A brand label is displayed only when it is present in the product title.
+            p["brand"] = proposed_brand if proposed_brand and proposed_brand.casefold() in name.casefold() else ""
             p["price"] = None
             p.pop("price_range", None)
             p["rating"] = max(0, min(5, to_num(p.get("rating"), 0)))
