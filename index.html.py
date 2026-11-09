@@ -24,6 +24,7 @@ try:
 except ImportError:
     OpenAI = None; client = None
 MODELS = ["openai/gpt-oss-20b"]
+VISION_MODEL = os.getenv("SHOPZEN_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_store.json")
 USERS, FEEDBACK, SEARCH_HISTORY, CONVERSATIONS, ROOMS, WISHLISTS = {}, [], {}, {}, {}, {}
 LAST_ACTIVE, RATE_BUCKETS, ASKED, CLARIFY_STATE = {}, {}, {}, {}
@@ -847,17 +848,36 @@ BRAND_OPTIONS = {
     "camera": ["Canon", "Nikon", "Sony"],
 }
 
-def clarify_questions(cat):
-    qs = [{"key": "budget", "q": "What's your budget? 💰",
-           "options": ["Under 5000", "Under 20000", "Under 60000", "Under 100000", "No limit"]},
-          {"key": "brand", "q": "Which brand do you prefer? ✨",
-           "options": BRAND_OPTIONS.get(cat, ["Any brand"]) + ["Any brand"]}]
-    if cat in ("shoes", "watch"):
-        qs.append({"key": "who", "q": "Who is it for? 🙂", "options": ["Male", "Female", "Kids", "Unisex"]})
-    else:
-        qs.append({"key": "color", "q": "Which colour do you love? 🎨", "options": ["Black", "Blue", "White", "Any colour"]})
-    for q in qs: q["options"] = q["options"] + ["⏭️ Skip, show now"]
+def clarify_questions(cat, query=""):
+    query = (query or "").lower()
+    qs = []
+    if not extract_budget(query):
+        qs.append({"key":"budget","q":"What's your budget for this "+cat+"? 💰","options":["Under 5000","Under 20000","Under 60000","Under 100000","No limit"]})
+    brand_known = any(b.lower() in query for brands in BRAND_OPTIONS.values() for b in brands)
+    if not brand_known and cat in BRAND_OPTIONS:
+        qs.append({"key":"brand","q":"Any preferred "+cat+" brand? ✨","options":BRAND_OPTIONS.get(cat,[])+["Any brand"]})
+    specific = {
+      "phone":[{"key":"priority","q":"What matters most in your phone? 📱","options":["Camera","Battery life","Gaming & performance","Balanced all-rounder"]}],
+      "laptop":[{"key":"usage","q":"What will you mainly use the laptop for? 💻","options":["Programming & college","Gaming","Editing & creative work","Office & everyday use"]},{"key":"priority","q":"Which laptop feature matters most?","options":["Performance","Battery life","Lightweight & portable","Display quality"]}],
+      "shoes":[{"key":"purpose","q":"What will you use these shoes for? 👟","options":["Daily casual wear","Running","Gym & training","Sports"]},{"key":"size","q":"What shoe size do you wear?","options":["UK 6","UK 7","UK 8","UK 9","UK 10","UK 11"]}],
+      "earbuds":[{"key":"priority","q":"What's most important in earbuds? 🎧","options":["Sound & bass","Noise cancellation","Clear calling","Battery life"]}],
+      "headphones":[{"key":"purpose","q":"Where will you use your headphones most?","options":["Music & entertainment","Online classes & calls","Gaming","Travel"]},{"key":"priority","q":"Which feature do you prefer?","options":["Noise cancellation","Strong bass","Comfort for long use","Low latency"]}],
+      "watch":[{"key":"purpose","q":"What do you need the smartwatch for? ⌚","options":["Fitness & health tracking","Notifications & calls","Style & daily use","Sports"]},{"key":"compatibility","q":"Which phone do you use?","options":["Android","iPhone","No preference"]}],
+      "tablet":[{"key":"purpose","q":"What will you mainly use the tablet for?","options":["Study & notes","Reading & browsing","Drawing & design","Gaming & entertainment"]}],
+      "tv":[{"key":"size","q":"What TV size are you looking for? 📺","options":["32–43 inch","50–55 inch","65 inch or larger","No preference"]},{"key":"priority","q":"What's your main TV use?","options":["Movies & OTT","Gaming","Sports","Everyday viewing"]}],
+      "camera":[{"key":"purpose","q":"What do you want to shoot most? 📷","options":["Travel & portraits","YouTube & vlogging","Professional photography","Wildlife & action"]}]
+    }
+    qs.extend(specific.get(cat,[]))
+    qs=qs[:2]
+    for q in qs:q["options"]=q["options"]+["⏭️ Skip, show now"]
     return qs
+
+def is_broad_product_request(message, cat):
+    text=(message or "").lower().strip()
+    if not cat:return False
+    if re.search(r"\b[a-z]+[- ]?\d{1,4}[a-z0-9-]*\b",text):return False
+    if any(x in text for x in ["compare","review","vs ","versus","price of"]):return False
+    return any(x in text for x in ["want","need","looking for","suggest","recommend","best","buy","show me","find me"]) or len(text.split())<=3
 
 FRIENDLY_NEXT = {"budget": "Perfect! 💸", "brand": "Great taste! ✨", "color": "Love that! 🎨", "who": "Got it! 🙂"}
 
@@ -982,6 +1002,24 @@ def llm_text(prompt):
         resp = client.chat.completions.create(model=MODELS[0], messages=[{"role": "system", "content": "You are ShopZen AI, a friendly shopping buddy. Reply plain text, max 3 sentences, warm tone."}, {"role": "user", "content": prompt}], temperature=0.7)
         return resp.choices[0].message.content.strip()
     except Exception: return None
+
+def analyse_product_image(image_data, mime_type):
+    if not client: raise RuntimeError("Groq API key is not configured.")
+    prompt = ("Inspect this shopping photo and identify the main sellable product, not accessories or background objects. "
+              "Return ONLY JSON keys: description (one or two factual sentences), category "
+              "(phone,laptop,shoes,earbuds,headphones,watch,tablet,tv,camera,other), "
+              "search_query (concise phrase for similar products of the same type and visible style), "
+              "attributes (array of visible attributes). Never guess an unreadable brand or model.")
+    response=client.chat.completions.create(
+      model=VISION_MODEL,
+      messages=[{"role":"user","content":[{"type":"text","text":prompt},{"type":"image_url","image_url":{"url":image_data}}]}],
+      temperature=0.1,max_tokens=500,response_format={"type":"json_object"})
+    result=json.loads(response.choices[0].message.content or "{}")
+    if result.get("category") not in set(CATEGORY_DICT)|{"other"}:result["category"]="other"
+    result["description"]=str(result.get("description") or "A product is visible in your photo.")[:500]
+    result["search_query"]=str(result.get("search_query") or "similar product")[:180]
+    result["attributes"]=[str(x)[:80] for x in result.get("attributes",[])[:8] if x]
+    return result
 
 def rate_limit(key, limit=20, window=60):
     now = time.time(); bucket = RATE_BUCKETS.setdefault(key, [])
@@ -1116,6 +1154,36 @@ def history(user_id: str = "demo", authorization: str = Header(default="")):
 def conversation(user_id: str = "demo", authorization: str = Header(default="")):
     return CONVERSATIONS.get(require_user(authorization, user_id), [])
 
+@app.post("/visual-search")
+async def visual_search(request: Request, authorization: str = Header(default="")):
+    uid=require_user(authorization)
+    rate_limit("visual:"+uid,5,300)
+    try:
+        payload=await request.json()
+        image_data=str(payload.get("image_data") or "")
+        if not image_data.startswith("data:image/") or ";base64," not in image_data:
+            raise HTTPException(status_code=400,detail="Please upload a JPG, PNG or WebP image.")
+        header,encoded=image_data.split(",",1)
+        mime_type=header[5:].split(";",1)[0].lower()
+        if mime_type not in {"image/jpeg","image/png","image/webp"}:
+            raise HTTPException(status_code=400,detail="Supported formats: JPG, PNG and WebP.")
+        if len(encoded)>7_000_000:raise HTTPException(status_code=413,detail="Image is too large. Please choose a smaller photo.")
+        import base64
+        try:decoded=base64.b64decode(encoded,validate=True)
+        except Exception:raise HTTPException(status_code=400,detail="The uploaded image could not be read.")
+        if len(decoded)>5*1024*1024:raise HTTPException(status_code=413,detail="Please use an image smaller than 5 MB.")
+        analysis=analyse_product_image("data:"+mime_type+";base64,"+encoded,mime_type)
+        query=analysis["search_query"]
+        if analysis["category"]!="other":query=analysis["category"]+" "+query
+        result=await chat(ChatReq(message="Find similar products to this photo: "+query,user_id=uid),request,authorization)
+        result["visual_analysis"]=analysis
+        result["summary"]="From your photo: "+analysis["description"]+" "+str(result.get("summary") or "")
+        return result
+    except HTTPException:raise
+    except Exception as e:
+        print("VISUAL SEARCH ERROR:",str(e)[:250])
+        raise HTTPException(status_code=502,detail="I couldn't analyse this image right now. Check the vision model/API key and try again.")
+
 @app.get("/liveprices")
 def liveprices(name: str = "", authorization: str = Header(default="")):
     require_user(authorization)
@@ -1209,13 +1277,10 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
         st["step"] += 1
         if not skipped and st["step"] < len(st["qs"]):
             return {"intent": "clarify", "summary": FRIENDLY_NEXT.get(cur["key"], "Perfect! 😊") + " Now tell me:", "questions": [st["qs"][st["step"]]]}
-        a = st["answers"]; cat = st["cat"]
-        parts = ["best", cat]
-        if a.get("brand") and "Any" not in a["brand"]: parts.append(a["brand"] + " brand")
-        if a.get("color") and "Any" not in a["color"]: parts.append(a["color"] + " colour")
-        if a.get("who"): parts.append("for " + a["who"].lower())
-        if a.get("budget") and "No limit" not in a["budget"]: parts.append(a["budget"].lower())
-        effective = " ".join(parts) + " model"
+        a=st["answers"];cat=st["cat"];parts=["best",cat]
+        for key,value in a.items():
+            if value and "Any " not in value and "No preference" not in value:parts.append(str(value))
+        effective=" ".join(parts)+" suitable models"
         prefs = a; CLARIFY_STATE.pop(uid, None); ASKED[uid] = True; personalized = True
         history = HISTORY.setdefault(uid, [])
     else:
@@ -1228,10 +1293,12 @@ async def chat(req: ChatReq, request: Request, authorization: str = Header(defau
             CLARIFY_STATE.pop(uid, None)
         elif current_cat and last_cat and current_cat != last_cat:
             history = HISTORY[uid] = []; ASKED[uid] = False
-        if current_cat and not ASKED.get(uid):
-            qs = clarify_questions(current_cat)
-            CLARIFY_STATE[uid] = {"cat": current_cat, "qs": qs, "step": 0, "answers": {}}
-            return {"intent": "clarify", "summary": "Awesome! I'll find the PERFECT " + current_cat + " for you 😊 Let's start:", "questions": [qs[0]]}
+        if current_cat and not ASKED.get(uid) and is_broad_product_request(msg_text,current_cat):
+            qs=clarify_questions(current_cat,msg_text)
+            if qs:
+                CLARIFY_STATE[uid]={"cat":current_cat,"qs":qs,"step":0,"answers":{}}
+                return {"intent":"clarify","summary":"Let's narrow down the right "+current_cat+" for you. I'll only ask what's useful for this product 😊","questions":[qs[0]]}
+            ASKED[uid]=True
         effective = last_query + ", " + msg_text if (last_query and is_fragment(msg_text)) else msg_text
 
     LAST_QUERY[uid] = effective
@@ -1518,7 +1585,10 @@ button.send:disabled{opacity:.5;cursor:not-allowed}
 <div id="chat-area" class="hidden"></div>
 
 <div class="input-area"><div class="input-wrap">
-<input id="input" placeholder="Tell me what you want… I'll ask the right questions 😊" onkeydown="if(event.key==='Enter')send()">
+<input id="input" placeholder="Tell me what you want… or find similar products from a photo" onkeydown="if(event.key==='Enter')send()">
+<input id="photo-file" type="file" accept="image/jpeg,image/png,image/webp" hidden onchange="handlePhotoFile(this.files&&this.files[0])">
+<button class="icon-btn" title="Upload a product photo" onclick="document.getElementById('photo-file').click()">📷 Upload</button>
+<button class="icon-btn" title="Open camera" onclick="openCamera()">Camera</button>
 <button class="icon-btn" onclick="startVoice()">🎤</button>
 <button class="send" id="send-btn" onclick="send()">Send</button>
 </div></div>
@@ -1591,6 +1661,11 @@ button.send:disabled{opacity:.5;cursor:not-allowed}
 <div style="margin-top:14px;font-size:11px;color:var(--dim);background:rgba(217,119,6,.06);border:1px solid rgba(217,119,6,.2);border-radius:12px;padding:11px;line-height:1.6">⚠️ LIVE = fetched from the store right now; AI CHECK = verified estimate. Powered by Groq Llama.</div>
 </div></div>
 
+<div id="camera-overlay" class="overlay hidden" onclick="closeCamera()"><div class="modal small" onclick="event.stopPropagation()">
+<button class="modal-close" onclick="closeCamera()">✕</button><h3 style="margin-bottom:12px">Take a product photo</h3>
+<video id="camera-video" autoplay playsinline style="width:100%;border-radius:14px;background:#111"></video>
+<button class="new-chat-btn" style="margin-top:12px" onclick="capturePhoto()">📸 Capture & analyse</button>
+</div></div>
 <div id="toast" class="toast"></div>
 
 <script>
@@ -1886,6 +1961,11 @@ function productCardHTML(p){
 function renderResponse(data){
   data=data||{};
   var html='<p>'+esc(data.summary||'')+'</p>';
+  if(data.visual_analysis){
+    html+='<div class="panel"><h4>🔎 What I found in your photo</h4><p>'+esc(data.visual_analysis.description||'')+'</p>'+
+      '<p style="font-size:11px;color:var(--dim);margin-top:6px">Category: '+esc(data.visual_analysis.category||'')+
+      (arr(data.visual_analysis.attributes).length?' • '+esc(data.visual_analysis.attributes.join(', ')):'')+'</p></div>';
+  }
   if(data.intent==='clarify'&&arr(data.questions).length){
     arr(data.questions).forEach(function(q){
       q=q||{};html+='<div class="cq">'+esc(q.q)+'</div><div class="chips">';
@@ -1988,6 +2068,49 @@ function sendMessage(text){
   .catch(function(){hideTyping();addMsg('agent',{intent:'chat',summary:'⚠️ Connection lost. Check backend.'})});
 }
 function send(){sendMessage(input.value)}
+var CAMERA_STREAM=null;
+function closeCamera(){
+  document.getElementById('camera-overlay').classList.add('hidden');
+  if(CAMERA_STREAM){CAMERA_STREAM.getTracks().forEach(function(t){t.stop()});CAMERA_STREAM=null}
+}
+function openCamera(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){toast('Camera access is not supported here. Use Upload instead.');document.getElementById('photo-file').click();return}
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false}).then(function(stream){
+    CAMERA_STREAM=stream;document.getElementById('camera-video').srcObject=stream;
+    document.getElementById('camera-overlay').classList.remove('hidden');
+  }).catch(function(){toast('Camera permission denied or camera unavailable. You can upload a photo instead.')});
+}
+function capturePhoto(){
+  var video=document.getElementById('camera-video');
+  if(!video.videoWidth){toast('Camera is not ready yet.');return}
+  var canvas=document.createElement('canvas'),scale=Math.min(1,1280/video.videoWidth);
+  canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+  var data=canvas.toDataURL('image/jpeg',0.82);closeCamera();analysePhotoData(data);
+}
+function handlePhotoFile(file){
+  if(!file)return;
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type)){toast('Please choose a JPG, PNG or WebP image.');return}
+  var reader=new FileReader();
+  reader.onload=function(){
+    var img=new Image();
+    img.onload=function(){
+      var canvas=document.createElement('canvas'),scale=Math.min(1,1280/Math.max(img.width,img.height));
+      canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
+      canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+      analysePhotoData(canvas.toDataURL('image/jpeg',0.82));
+    };
+    img.onerror=function(){toast('Could not read that image.')};img.src=reader.result;
+  };
+  reader.readAsDataURL(file);document.getElementById('photo-file').value='';
+}
+function analysePhotoData(dataUrl){
+  startChatView();addMsg('user','📷 Find similar products from my photo');showTyping();
+  apiFetch('/visual-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_data:dataUrl,user_id:UID})})
+  .then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error(d.detail||'Image analysis failed');return d})})
+  .then(function(data){hideTyping();addMsg('agent',data);if(data&&data.intent==='search')refreshSidebar()})
+  .catch(function(e){hideTyping();addMsg('agent',{intent:'chat',summary:'⚠️ '+(e.message||'Could not analyse the photo. Please try again.')})});
+}
 function startVoice(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR)return alert('Voice not supported');
