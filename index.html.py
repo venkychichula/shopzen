@@ -482,7 +482,7 @@ def _fetch_product_metadata(url):
             image_url = urllib.parse.urljoin(url, image_url)
         if image_url and not image_url.startswith("https://"):
             image_url = ""
-        sizes = list(dict.fromkeys(sizes + re.findall(r'["\']size["\']\s*:\s*["\']([^"\']{1,20})["\']', page, re.I)))[:12]
+        sizes = list(dict.fromkeys(str(size) for size in sizes if size))[:12]
         return {"title": title[:240], "image_url": image_url[:1000], "brand": brand[:100], "price": price, "sizes": sizes}
     except Exception:
         return {"title": "", "image_url": "", "brand": "", "price": None}
