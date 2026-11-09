@@ -1700,17 +1700,20 @@ function shareToGroup(){var p=window._modalProduct;if(!p)return;if(!ROOM.joined)
 function fetchLive(idx){
   var p=PSTORE[idx];if(!p)return;
   apiFetch('/liveprices?name='+encodeURIComponent(p.name)).then(function(r){return r.json()}).then(function(d){
-    var live=arr(d.results);if(!live.length)return;
+    var live=arr(d.results);
     p.live_prices=live;
-    var withPrice=live.filter(function(s){return s.price!=null}).sort(function(a,b){return a.price-b.price});
+    var withPrice=live.filter(function(s){return s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
+    var pe=document.getElementById('price-'+idx);
+    var b=document.getElementById('best-'+idx);
     if(withPrice.length){
       p.price=withPrice[0].price;
-      var pe=document.getElementById('price-'+idx);
-      if(pe)pe.innerHTML='≈ '+inr(withPrice[0].price)+' <span style="color:var(--green);font-size:9px;font-weight:800">LIVE</span>';
-      var b=document.getElementById('best-'+idx);
-      if(b)b.innerHTML='⚡ LIVE: '+inr(withPrice[0].price)+' on '+esc(withPrice[0].store);
+      if(pe)pe.innerHTML='₹'+inr(withPrice[0].price)+' <span style="color:var(--green);font-size:9px;font-weight:800">RETRIEVED</span>';
+      if(b)b.innerHTML='Retrieved from '+esc(withPrice[0].store)+' — verify on retailer page';
       var bb=document.getElementById('buy-'+idx);
-      if(bb){bb.href=withPrice[0].url;bb.innerHTML='🛒 Buy • '+esc(withPrice[0].store)+' — '+inr(withPrice[0].price)}
+      if(bb){bb.href=withPrice[0].url;bb.innerHTML='🛒 View retailer • '+esc(withPrice[0].store)}
+    }else{
+      if(pe)pe.textContent='Price unavailable';
+      if(b)b.textContent='No retailer price could be retrieved. Check the retailer listing.';
     }
     if(MODAL_IDX===idx){document.getElementById('m-price').textContent=p.price!=null?'₹'+inr(p.price):'Price unavailable';document.getElementById('m-stores').innerHTML=renderStorePrices(p);document.getElementById('m-links').innerHTML=bestDealBar(p)}
   }).catch(function(){});
