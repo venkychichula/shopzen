@@ -24,7 +24,7 @@ try:
 except ImportError:
     OpenAI = None; client = None
 MODELS = ["openai/gpt-oss-20b"]
-VISION_MODEL = os.getenv("SHOPZEN_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+VISION_MODEL = os.getenv("SHOPZEN_VISION_MODEL", "qwen/qwen3.8-27b")
 STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_store.json")
 USERS, FEEDBACK, SEARCH_HISTORY, CONVERSATIONS, ROOMS, WISHLISTS = {}, [], {}, {}, {}, {}
 LAST_ACTIVE, RATE_BUCKETS, ASKED, CLARIFY_STATE = {}, {}, {}, {}
@@ -853,9 +853,6 @@ def clarify_questions(cat, query=""):
     qs = []
     if not extract_budget(query):
         qs.append({"key":"budget","q":"What's your budget for this "+cat+"? 💰","options":["Under 5000","Under 20000","Under 60000","Under 100000","No limit"]})
-    brand_known = any(b.lower() in query for brands in BRAND_OPTIONS.values() for b in brands)
-    if not brand_known and cat in BRAND_OPTIONS:
-        qs.append({"key":"brand","q":"Any preferred "+cat+" brand? ✨","options":BRAND_OPTIONS.get(cat,[])+["Any brand"]})
     specific = {
       "phone":[{"key":"priority","q":"What matters most in your phone? 📱","options":["Camera","Battery life","Gaming & performance","Balanced all-rounder"]}],
       "laptop":[{"key":"usage","q":"What will you mainly use the laptop for? 💻","options":["Programming & college","Gaming","Editing & creative work","Office & everyday use"]},{"key":"priority","q":"Which laptop feature matters most?","options":["Performance","Battery life","Lightweight & portable","Display quality"]}],
@@ -867,9 +864,13 @@ def clarify_questions(cat, query=""):
       "tv":[{"key":"size","q":"What TV size are you looking for? 📺","options":["32–43 inch","50–55 inch","65 inch or larger","No preference"]},{"key":"priority","q":"What's your main TV use?","options":["Movies & OTT","Gaming","Sports","Everyday viewing"]}],
       "camera":[{"key":"purpose","q":"What do you want to shoot most? 📷","options":["Travel & portraits","YouTube & vlogging","Professional photography","Wildlife & action"]}]
     }
-    qs.extend(specific.get(cat,[]))
-    qs=qs[:2]
-    for q in qs:q["options"]=q["options"]+["⏭️ Skip, show now"]
+    category_qs = specific.get(cat, [])
+    qs.extend(category_qs)
+    if not category_qs and cat in BRAND_OPTIONS:
+        qs.append({"key":"brand","q":"Any preferred "+cat+" brand? ✨","options":BRAND_OPTIONS.get(cat,[])+["Any brand"]})
+    qs = qs[:2]
+    for q in qs:
+        q["options"] = q["options"] + ["⏭️ Skip, show now"]
     return qs
 
 def is_broad_product_request(message, cat):
