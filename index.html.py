@@ -427,6 +427,39 @@ def _fetch_product_metadata(url):
         brand = meta_value(r'<meta[^>]+(?:property|name)=["\'](?:product:brand|brand)["\'][^>]+content=["\']([^"\']+)')
         price_text = meta_value(r'<meta[^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\'][^>]+content=["\']([^"\']+)')
         currency = meta_value(r'<meta[^>]+(?:property|itemprop)=["\'](?:product:price:currency|priceCurrency)["\'][^>]+content=["\']([^"\']+)')
+        sizes = []
+        # Retailers often publish product facts in JSON-LD; use it only when currency is explicit.
+        for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', page, re.I | re.S):
+            try:
+                parsed = json.loads(block.strip())
+            except Exception:
+                continue
+            stack = parsed if isinstance(parsed, list) else [parsed]
+            while stack:
+                item = stack.pop()
+                if isinstance(item, list):
+                    stack.extend(item)
+                elif isinstance(item, dict):
+                    item_type = str(item.get("@type") or "").lower()
+                    if "product" in item_type or ("offers" in item and "name" in item):
+                        title = title or str(item.get("name") or "")
+                        image = item.get("image")
+                        if not image_url and image:
+                            image_url = image[0] if isinstance(image, list) else str(image)
+                        item_brand = item.get("brand")
+                        if not brand and item_brand:
+                            brand = str(item_brand.get("name") if isinstance(item_brand, dict) else item_brand)
+                        size_value = item.get("size")
+                        if size_value:
+                            sizes.extend(size_value if isinstance(size_value, list) else [str(size_value)])
+                        offers = item.get("offers") or {}
+                        offers = offers if isinstance(offers, list) else [offers]
+                        for offer in offers:
+                            if isinstance(offer, dict):
+                                currency = currency or str(offer.get("priceCurrency") or "")
+                                if not price_text and offer.get("price") is not None:
+                                    price_text = str(offer.get("price"))
+                    stack.extend(v for v in item.values() if isinstance(v, (dict, list)))
         if not price_text:
             price_text = meta_value(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\']')
         price = None
@@ -446,7 +479,7 @@ def _fetch_product_metadata(url):
             image_url = "https:" + image_url
         if image_url and not image_url.startswith("https://"):
             image_url = ""
-        sizes = list(dict.fromkeys(re.findall(r'["\']size["\']\s*:\s*["\']([^"\']{1,20})["\']', page, re.I)))[:12]
+        sizes = list(dict.fromkeys(sizes + re.findall(r'["\']size["\']\s*:\s*["\']([^"\']{1,20})["\']', page, re.I)))[:12]
         return {"title": title[:240], "image_url": image_url[:1000], "brand": brand[:100], "price": price, "sizes": sizes}
     except Exception:
         return {"title": "", "image_url": "", "brand": "", "price": None}
