@@ -842,7 +842,7 @@ INTENTS:
 
 CATEGORY_DICT = {
     "laptop": ["laptop", "notebook", "macbook"], "phone": ["phone", "mobile", "smartphone", "iphone", "samsung"],
-    "shoes": ["shoe", "shoes", "sneaker", "nike", "adidas"], "earbuds": ["earbud", "earbuds", "tws", "buds", "airpods"],
+    "shoes": ["shoe", "shoes", "sneaker", "trainers", "footwear"], "earbuds": ["earbud", "earbuds", "tws", "buds", "airpods"],
     "headphones": ["headphone", "headset"], "watch": ["watch", "smartwatch"], "tablet": ["tablet", "ipad"],
     "tv": ["tv", "television"], "camera": ["camera", "dslr"],
     "clothing": ["cargo", "cargo pants", "cargo trousers", "trousers", "pants", "jeans", "shirt", "shirts", "tshirt", "t-shirt", "dress", "hoodie", "jacket", "kurta", "shorts"],
@@ -1846,7 +1846,7 @@ function renderStorePrices(p){
     return '<tr'+(isBest?' style="background:rgba(52,211,153,.10)"':'')+'>'+
       '<td><b>'+esc(s.store)+'</b> '+(s.live
         ?'<span style="color:var(--green);font-size:9px;font-weight:800;border:1px solid rgba(52,211,153,.4);padding:1px 6px;border-radius:99px">LIVE</span>'
-        :'<span style="color:var(--dim);font-size:9px;font-weight:700">AI CHECK</span>')+
+        :'<span style="color:var(--dim);font-size:9px;font-weight:700">'+(s.match_type==='search'?'SEARCH LINK':'CHECK LISTING')+'</span>')+
       (isBest?' <span style="color:var(--green);font-size:10px;font-weight:800">BEST</span>':'')+'</td>'+
       '<td style="font-weight:700">'+(s.price!=null?inr(s.price):'—')+'</td>'+
       '<td><a class="shop-btn" target="_blank" rel="noopener noreferrer" href="'+s.url+'">Visit ↗</a></td></tr>';
