@@ -132,13 +132,9 @@ def kb_price(name):
 # We never expose DuckDuckGo/search-engine URLs to users.
 
 STORE_LIST = [
-    "Amazon",
-    "Flipkart",
-    "Croma",
-    "Tata CLiQ",
-    "Reliance Digital",
-    "Vijay Sales",
-    "Snapdeal"
+    "Amazon", "Flipkart", "Croma", "Tata CLiQ",
+    "Reliance Digital", "Vijay Sales", "Snapdeal",
+    "Myntra", "AJIO", "H&M", "Zara", "Levi's"
 ]
 
 STORE_DOMAINS = {
@@ -148,7 +144,12 @@ STORE_DOMAINS = {
     "Tata CLiQ": "tatacliq.com",
     "Reliance Digital": "reliancedigital.in",
     "Vijay Sales": "vijaysales.com",
-    "Snapdeal": "snapdeal.com"
+    "Snapdeal": "snapdeal.com",
+    "Myntra": "myntra.com",
+    "AJIO": "ajio.com",
+    "H&M": "hm.com",
+    "Zara": "zara.com",
+    "Levi's": "levi.in"
 }
 
 
@@ -310,7 +311,12 @@ def direct_url(store, name):
 
         "Snapdeal": (
             f"https://www.snapdeal.com/search?keyword={q}"
-        )
+        ),
+        "Myntra": f"https://www.myntra.com/search?q={q}",
+        "AJIO": f"https://www.ajio.com/search/?text={q}",
+        "H&M": f"https://www2.hm.com/en_in/search-results.html?q={q}",
+        "Zara": f"https://www.zara.com/in/en/search?searchTerm={q}",
+        "Levi's": f"https://www.levi.in/search?q={q}"
     }
 
     return SEARCH_URLS.get(
@@ -409,44 +415,113 @@ def _resolve_exact(domain, name):
 # Price extraction
 # ---------------------------------------------------------
 
-def _price_from_page(url):
-    """
-    Extract a possible INR price from a retailer page.
-
-    This price is considered LIVE only when it comes from
-    a successfully fetched retailer product page.
-    """
-
+def _fetch_product_metadata(url):
+    """Read only structured product metadata from a retailer product page."""
     try:
-
-        if not url:
-            return None
-
-        html = _http_get(url)
-
-        # ₹12,999
-        m = re.search(
-            r'₹\s*([\d,]{3,})',
-            html
-        )
-
-        if m:
-            return int(
-                m.group(1).replace(",", "")
-            )
-
-        # JSON price field
-        m = re.search(
-            r'"price"\s*:\s*"([\d.]+)"',
-            html
-        )
-
-        if m:
-            return int(float(m.group(1)))
-
+        page = _http_get(url)
+        def meta_value(pattern):
+            m = re.search(pattern, page, re.I | re.S)
+            return re.sub(r"\\s+", " ", m.group(1)).strip() if m else ""
+        title = meta_value(r'<meta[^>]+(?:property|name)=["\'](?:og:title|twitter:title)["\'][^>]+content=["\']([^"\']+)')
+        image_url = meta_value(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)')
+        brand = meta_value(r'<meta[^>]+(?:property|name)=["\'](?:product:brand|brand)["\'][^>]+content=["\']([^"\']+)')
+        price_text = meta_value(r'<meta[^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\'][^>]+content=["\']([^"\']+)')
+        currency = meta_value(r'<meta[^>]+(?:property|itemprop)=["\'](?:product:price:currency|priceCurrency)["\'][^>]+content=["\']([^"\']+)')
+        if not price_text:
+            price_text = meta_value(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|itemprop)=["\'](?:product:price:amount|price)["\']')
+        price = None
+        if price_text and (not currency or currency.upper() in ("INR", "RS", "₹")):
+            try:
+                value = float(re.sub(r"[^0-9.]", "", price_text))
+                if 100 <= value <= 1000000:
+                    price = int(value)
+            except Exception:
+                pass
+        if not title:
+            m = re.search(r'<title[^>]*>(.*?)</title>', page, re.I | re.S)
+            if m: title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if not image_url:
+            image_url = meta_value(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']')
+        if image_url and image_url.startswith("//"):
+            image_url = "https:" + image_url
+        if image_url and not image_url.startswith("https://"):
+            image_url = ""
+        return {"title": title[:240], "image_url": image_url[:1000], "brand": brand[:100], "price": price}
     except Exception:
-        pass
+        return {"title": "", "image_url": "", "brand": "", "price": None}
 
+
+def _fashion_candidate_matches(query, title):
+    q = _product_tokens(query)
+    t = _product_tokens(title)
+    if not q or not t:
+        return False, 0.0
+    # Require the requested garment identity; do not accept generic accessories.
+    qn = _normalize_product_text(query)
+    tn = _normalize_product_text(title)
+    garment_groups = [
+        (("cargo",), ("pant", "pants", "trouser", "trousers")),
+        (("jean", "jeans", "denim"), ("jean", "jeans", "denim")),
+        (("shirt", "shirts", "tshirt", "t shirt"), ("shirt", "shirts", "tshirt")),
+        (("hoodie",), ("hoodie",)),
+        (("jacket",), ("jacket",)),
+        (("dress",), ("dress",)),
+        (("short", "shorts"), ("short", "shorts"))
+    ]
+    for triggers, required in garment_groups:
+        if any(x in qn for x in triggers):
+            if not any(x in tn for x in required):
+                return False, 0.0
+            break
+    # If user named a brand, require that brand in the actual listing title.
+    known_brands = ["levi's", "levis", "zara", "h&m", "roadster", "snitch", "puma", "adidas", "nike"]
+    requested_brand = next((b for b in known_brands if b in qn), "")
+    if requested_brand and requested_brand.replace("'", "") not in tn.replace("'", ""):
+        return False, 0.0
+    overlap = len(q & t)
+    score = overlap / max(1, len(q))
+    return score >= 0.45, score
+
+
+def _discover_fashion_listing(store, query):
+    domain = STORE_DOMAINS[store]
+    try:
+        search = urllib.parse.quote('site:' + domain + ' ' + query)
+        page = _http_get("https://html.duckduckgo.com/html/?q=" + search)
+        # Parse retailer-owned result URLs and visible result titles.
+        anchors = re.findall(
+            r'<a[^>]+class=["\'][^"\']*result__a[^"\']*["\'][^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            page, re.I | re.S
+        )
+        for raw_url, raw_title in anchors[:8]:
+            title = re.sub(r"<[^>]+>", " ", raw_title)
+            title = re.sub(r"\\s+", " ", title).strip()
+            target = urllib.parse.unquote(raw_url)
+            if "uddg=" in target:
+                target = urllib.parse.parse_qs(urllib.parse.urlparse(target).query).get("uddg", [""])[0]
+            elif target.startswith("//duckduckgo.com/l/"):
+                target = urllib.parse.parse_qs(urllib.parse.urlparse("https:" + target).query).get("uddg", [""])[0]
+            if not _is_allowed_retailer_url(store, target):
+                continue
+            path = urllib.parse.urlparse(target).path.lower()
+            if any(x in path for x in ("/search", "/category", "/collections", "/sale")):
+                continue
+            if len(path.strip("/").split("/")) < 2:
+                continue
+            matched, score = _fashion_candidate_matches(query, title)
+            if not matched:
+                continue
+            details = _fetch_product_metadata(target)
+            actual_title = details.get("title") or title
+            matched_page, page_score = _fashion_candidate_matches(query, actual_title)
+            if not matched_page:
+                continue
+            details["title"] = actual_title
+            details["url"] = target
+            details["confidence"] = round(min(score, page_score), 2)
+            return details
+    except Exception as e:
+        print("FASHION LISTING ERROR:", store, str(e)[:160])
     return None
 
 
@@ -455,13 +530,9 @@ def _price_from_page(url):
 # ---------------------------------------------------------
 
 def _store_result(
-    store,
-    name,
-    url,
-    price=None,
-    live=False,
-    match_type="search",
-    confidence=0.0
+    store, name, url, price=None, live=False,
+    match_type="search", confidence=0.0,
+    product_title="", image_url="", brand="", sizes=None
 ):
     """
     Keep every retailer response in the same format.
@@ -500,7 +571,11 @@ def _store_result(
             max(0.0, min(1.0, confidence)),
             2
         ),
-        "price_status": price_status
+        "price_status": price_status,
+        "product_title": product_title,
+        "image_url": image_url,
+        "brand": brand,
+        "sizes": sizes or []
     }
 
 
@@ -734,22 +809,43 @@ def _live_store(store, name):
 # ---------------------------------------------------------
 
 def fetch_live_prices(name):
-    # Fashion items must never be sent through electronics retailer scrapers.
-    # These are retailer search pages, not verified exact product pages or prices.
+    # Fashion gets retailer-specific listing discovery, never electronics scrapers.
     if extract_category(name) == "clothing":
-        q = urllib.parse.quote_plus(name)
-        fashion_searches = [
-            ("Myntra", "https://www.myntra.com/search?q=" + q),
-            ("AJIO", "https://www.ajio.com/search/?text=" + q),
-            ("H&M", "https://www2.hm.com/en_in/search-results.html?q=" + q),
-            ("Zara", "https://www.zara.com/in/en/search?searchTerm=" + q),
-            ("Levi's", "https://www.levi.in/search?q=" + q),
-            ("Amazon", "https://www.amazon.in/s?k=" + q),
-            ("Flipkart", "https://www.flipkart.com/search?q=" + q)
-        ]
-        return [_store_result(store, name, url, price=None, live=False,
-                              match_type="search", confidence=0.0)
-                for store, url in fashion_searches]
+        key = "fashion:" + _normalize_product_text(name)
+        cached = LIVE_CACHE.get(key)
+        if cached and time.time() - cached["ts"] < 300:
+            return cached["results"]
+        results = []
+        stores = ["Myntra", "AJIO", "H&M", "Zara", "Levi's", "Amazon", "Flipkart"]
+        def search_fashion_store(store):
+            if store in STORE_DOMAINS:
+                found = _discover_fashion_listing(store, name)
+                if found:
+                    return _store_result(
+                        store, name, found["url"],
+                        price=found.get("price"), live=found.get("price") is not None,
+                        match_type="exact", confidence=found.get("confidence", 0.0),
+                        product_title=found.get("title", ""),
+                        image_url=found.get("image_url", ""),
+                        brand=found.get("brand", "")
+                    )
+            return _store_result(store, name, direct_url(store, name),
+                                 match_type="search", confidence=0.0)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
+                futures = [ex.submit(search_fashion_store, store) for store in stores]
+                for future in concurrent.futures.as_completed(futures, timeout=18):
+                    try:
+                        result = future.result()
+                        if result: results.append(result)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        order = {store: i for i, store in enumerate(stores)}
+        results.sort(key=lambda x: order.get(x["store"], 99))
+        LIVE_CACHE[key] = {"ts": time.time(), "results": results}
+        return results
 
     key = (
         _normalize_product_text(name)
