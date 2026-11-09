@@ -895,9 +895,12 @@ def to_num(v, default=0):
         return default
 
 def extract_category(text):
-    text = text.lower()
+    text = _normalize_product_text(text)
+    tokens = set(text.split())
+    # Match whole words so "headphones" is not mistaken for "phone".
     for cat, words in CATEGORY_DICT.items():
-        if any(w in text for w in words): return cat
+        if any(_normalize_product_text(w) in tokens for w in words):
+            return cat
     return None
 
 def extract_budget(text):
