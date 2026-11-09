@@ -213,8 +213,11 @@ def _product_tokens(text):
         "products"
     }
 
+    synonyms = {"trousers": "pants", "trouser": "pants", "pant": "pants",
+                "jeans": "jean", "shirts": "shirt", "sneakers": "shoe",
+                "trainers": "shoe", "tees": "tshirt"}
     return {
-        token
+        synonyms.get(token, token)
         for token in normalized.split()
         if len(token) >= 2 and token not in stop_words
     }
@@ -475,8 +478,8 @@ def _fetch_product_metadata(url):
             if m: title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
         if not image_url:
             image_url = meta_value(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']')
-        if image_url and image_url.startswith("//"):
-            image_url = "https:" + image_url
+        if image_url:
+            image_url = urllib.parse.urljoin(url, image_url)
         if image_url and not image_url.startswith("https://"):
             image_url = ""
         sizes = list(dict.fromkeys(sizes + re.findall(r'["\']size["\']\s*:\s*["\']([^"\']{1,20})["\']', page, re.I)))[:12]
