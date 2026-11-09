@@ -8,7 +8,7 @@ from fastapi import FastAPI, Response, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os, json, random, hashlib, hmac, uuid, time, re, socket
-import urllib.parse, urllib.request, concurrent.futures
+import urllib.parse, urllib.request, concurrent.futures, html
 from datetime import datetime, timedelta
 from collections import OrderedDict
 from dotenv import load_dotenv
@@ -421,7 +421,7 @@ def _fetch_product_metadata(url):
         page = _http_get(url)
         def meta_value(pattern):
             m = re.search(pattern, page, re.I | re.S)
-            return re.sub(r"\\s+", " ", m.group(1)).strip() if m else ""
+            return re.sub(r"\s+", " ", html.unescape(m.group(1))).strip() if m else ""
         title = meta_value(r'<meta[^>]+(?:property|name)=["\'](?:og:title|twitter:title)["\'][^>]+content=["\']([^"\']+)')
         image_url = meta_value(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)')
         brand = meta_value(r'<meta[^>]+(?:property|name)=["\'](?:product:brand|brand)["\'][^>]+content=["\']([^"\']+)')
@@ -446,7 +446,8 @@ def _fetch_product_metadata(url):
             image_url = "https:" + image_url
         if image_url and not image_url.startswith("https://"):
             image_url = ""
-        return {"title": title[:240], "image_url": image_url[:1000], "brand": brand[:100], "price": price}
+        sizes = list(dict.fromkeys(re.findall(r'["\']size["\']\s*:\s*["\']([^"\']{1,20})["\']', page, re.I)))[:12]
+        return {"title": title[:240], "image_url": image_url[:1000], "brand": brand[:100], "price": price, "sizes": sizes}
     except Exception:
         return {"title": "", "image_url": "", "brand": "", "price": None}
 
@@ -495,7 +496,7 @@ def _discover_fashion_listing(store, query):
         )
         for raw_url, raw_title in anchors[:8]:
             title = re.sub(r"<[^>]+>", " ", raw_title)
-            title = re.sub(r"\\s+", " ", title).strip()
+            title = re.sub(r"\s+", " ", html.unescape(title)).strip()
             target = urllib.parse.unquote(raw_url)
             if "uddg=" in target:
                 target = urllib.parse.parse_qs(urllib.parse.urlparse(target).query).get("uddg", [""])[0]
@@ -827,7 +828,8 @@ def fetch_live_prices(name):
                         match_type="exact", confidence=found.get("confidence", 0.0),
                         product_title=found.get("title", ""),
                         image_url=found.get("image_url", ""),
-                        brand=found.get("brand", "")
+                        brand=found.get("brand", ""),
+                        sizes=found.get("sizes", [])
                     )
             return _store_result(store, name, direct_url(store, name),
                                  match_type="search", confidence=0.0)
@@ -1901,35 +1903,51 @@ function fetchLive(idx){
   apiFetch('/liveprices?name='+encodeURIComponent(p.name)).then(function(r){return r.json()}).then(function(d){
     var live=arr(d.results);
     p.live_prices=live;
-    var withPrice=live.filter(function(s){return s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
+    var exact=live.find(function(s){return s.match_type==='exact'&&s.url});
+    var withPrice=live.filter(function(s){return s.match_type==='exact'&&s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
     var pe=document.getElementById('price-'+idx);
     var b=document.getElementById('best-'+idx);
+    if(exact){
+      if(exact.image_url){
+        p.image_url=exact.image_url;
+        var photo=document.getElementById('photo-'+idx);
+        if(photo)photo.innerHTML='<img src="'+esc(exact.image_url)+'" alt="'+esc(exact.product_title||p.name)+'" loading="lazy">';
+        if(MODAL_IDX===idx)document.getElementById('m-img').src=exact.image_url;
+      }
+      p.brand=exact.brand||'';
+      var brandEl=document.getElementById('brand-'+idx);
+      if(brandEl)brandEl.textContent=p.brand;
+      if(MODAL_IDX===idx)document.getElementById('m-brand').textContent=p.brand.toUpperCase();
+      if(b)b.textContent='Matching product listing found at '+exact.store+'. Check available sizes and final details on the retailer page.';
+      var bb=document.getElementById('buy-'+idx);
+      if(bb){bb.href=exact.url;bb.innerHTML='🛒 View matching listing • '+esc(exact.store)}
+    }else if(b){
+      b.textContent='No exact retailer product listing verified yet. Search retailer catalogues below.';
+    }
     if(withPrice.length){
       p.price=withPrice[0].price;
-      if(pe)pe.innerHTML='₹'+inr(withPrice[0].price)+' <span style="color:var(--green);font-size:9px;font-weight:800">RETRIEVED</span>';
-      if(b)b.innerHTML='Retrieved from '+esc(withPrice[0].store)+' — verify on retailer page';
-      var bb=document.getElementById('buy-'+idx);
-      if(bb){bb.href=withPrice[0].url;bb.innerHTML='🛒 View retailer • '+esc(withPrice[0].store)}
-    }else{
-      if(pe)pe.textContent='Price unavailable';
-      if(b)b.textContent='No retailer price could be retrieved. Check the retailer listing.';
+      if(pe)pe.innerHTML='₹'+inr(withPrice[0].price)+' <span style="color:var(--green);font-size:9px;font-weight:800">LISTING PRICE</span>';
+    }else if(pe){pe.textContent='Price unavailable — check retailer listing';}
+    if(MODAL_IDX===idx){
+      document.getElementById('m-price').textContent=p.price!=null?'₹'+inr(p.price):'Price unavailable';
+      document.getElementById('m-stores').innerHTML=renderStorePrices(p);
+      document.getElementById('m-links').innerHTML=bestDealBar(p);
     }
-    if(MODAL_IDX===idx){document.getElementById('m-price').textContent=p.price!=null?'₹'+inr(p.price):'Price unavailable';document.getElementById('m-stores').innerHTML=renderStorePrices(p);document.getElementById('m-links').innerHTML=bestDealBar(p)}
   }).catch(function(){});
 }
 function drainLive(){while(LIVEQ.length)fetchLive(LIVEQ.shift())}
 
 function bestDealBar(p){
-  var live=arr(p.live_prices).filter(function(s){return s.price!=null&&s.url}).sort(function(a,b){return a.price-b.price});
+  var live=arr(p.live_prices).filter(function(s){return s.match_type==='exact'&&s.url}).sort(function(a,b){return (a.price==null?9e9:a.price)-(b.price==null?9e9:b.price)});
   var bs=live.length?live[0]:null;
-  var html=bs?'<a class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+bs.url+'">🛒 View retailer — '+esc(bs.store)+(bs.price!=null?' • '+inr(bs.price):'')+'</a> ':'';
+  var html=bs?'<a class="buy-btn" target="_blank" rel="noopener noreferrer" href="'+bs.url+'">🛒 View matching listing — '+esc(bs.store)+(bs.price!=null?' • '+inr(bs.price):'')+'</a> ':'';
   return html+'<button class="shop-btn" onclick="shareToGroup()">👥 Share</button><button class="shop-btn" onclick="saveWish()">🔖 Wishlist</button>';
 }
 
 function renderStorePrices(p){
   var liveArr=arr(p.live_prices);
   var merged=liveArr.map(function(s){
-    return {store:s.store, price:s.price, url:s.url, live:!!s.live, match_type:s.match_type||"likely"};
+    return {store:s.store, price:s.price, url:s.url, live:!!s.live, match_type:s.match_type||"likely", product_title:s.product_title||"", sizes:arr(s.sizes)};
   });
   merged.sort(function(a,b){
     if(a.live!==b.live)return a.live?-1:1;
@@ -1940,12 +1958,14 @@ function renderStorePrices(p){
   var rows=merged.map(function(s){
     var isBest=lowest&&s.store===lowest.store&&s.price!=null;
     return '<tr'+(isBest?' style="background:rgba(52,211,153,.10)"':'')+'>'+
-      '<td><b>'+esc(s.store)+'</b> '+(s.live
-        ?'<span style="color:var(--green);font-size:9px;font-weight:800;border:1px solid rgba(52,211,153,.4);padding:1px 6px;border-radius:99px">LIVE</span>'
-        :'<span style="color:var(--dim);font-size:9px;font-weight:700">'+(s.match_type==='search'?'SEARCH LINK':'CHECK LISTING')+'</span>')+
-      (isBest?' <span style="color:var(--green);font-size:10px;font-weight:800">BEST</span>':'')+'</td>'+
-      '<td style="font-weight:700">'+(s.price!=null?inr(s.price):'—')+'</td>'+
-      '<td><a class="shop-btn" target="_blank" rel="noopener noreferrer" href="'+s.url+'">Visit ↗</a></td></tr>';
+      '<td><b>'+esc(s.store)+'</b> '+(s.match_type==='exact'
+        ?'<span style="color:var(--green);font-size:9px;font-weight:800">MATCHED LISTING</span>'
+        :'<span style="color:var(--dim);font-size:9px;font-weight:700">SEARCH LINK</span>')+
+      (isBest?' <span style="color:var(--green);font-size:10px;font-weight:800">BEST PRICE</span>':'')+
+      (s.product_title?'<div style="font-size:10px;color:var(--dim);margin-top:3px">'+esc(s.product_title)+'</div>':'')+
+      (s.sizes.length?'<div style="font-size:10px;color:var(--dim)">Sizes listed: '+esc(s.sizes.join(', '))+'</div>':'')+'</td>'+
+      '<td style="font-weight:700">'+(s.price!=null?inr(s.price):'Not retrieved')+'</td>'+
+      '<td><a class="shop-btn" target="_blank" rel="noopener noreferrer" href="'+s.url+'">View ↗</a></td></tr>';
   }).join('');
   if(!rows)return '<p class="range">No retailer price could be retrieved right now. Use the product search link to check current listings.</p>';
   return '<div class="chart-box" style="margin:12px 0"><div class="chart-head"><h3>🛒 '+esc(p.name)+' — retailer results</h3>'+(lowest?'<span class="verdict verdict-BUYNOW">Lowest retrieved: '+inr(lowest.price)+'</span>':'')+'</div>'+
@@ -2068,9 +2088,9 @@ function productCardHTML(p){
   var buyUrl=directUrl('flipkart.com',p.name);
   var buyLabel='🛒 Search retailers';
   return '<div class="product-card">'+
-    '<div class="img-wrap" onclick="openModal('+idx+')">'+(p.image_url?'<img src="'+p.image_url+'" alt="'+esc(p.name)+'">':'<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:150px;color:var(--dim);font-size:12px;text-align:center;padding:12px">Verified product photo unavailable</div>')+'</div>'+
+    '<div class="img-wrap" id="photo-'+idx+'" onclick="openModal('+idx+')">'+(p.image_url?'<img src="'+p.image_url+'" alt="'+esc(p.name)+'">':'<div style="display:flex;align-items:center;justify-content:center;height:100%;min-height:150px;color:var(--dim);font-size:12px;text-align:center;padding:12px">Verified product photo unavailable</div>')+'</div>'+
     '<div class="product-info">'+
-      '<div style="display:flex;justify-content:space-between;align-items:center"><span class="brand">'+esc(p.brand)+'</span><span style="font-size:11px;color:var(--amber);font-weight:700">★ '+numSafe(p.rating)+'</span></div>'+
+      '<div style="display:flex;justify-content:space-between;align-items:center"><span class="brand" id="brand-'+idx+'">'+esc(p.brand)+'</span><span style="font-size:11px;color:var(--amber);font-weight:700">★ '+numSafe(p.rating)+'</span></div>'+
       '<div class="name" onclick="openModal('+idx+')">'+esc(p.name)+'</div>'+
       '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="price" id="price-'+idx+'">Price unavailable — checking stores…</span></div>'+
       '<div class="bestline" id="best-'+idx+'">Only retrieved retailer prices will appear here.</div>'+
